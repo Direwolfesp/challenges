@@ -1,6 +1,5 @@
 //! Find duplicate files in a directory (recursively)
 //! and let the user choose which one to delete
-
 const std = @import("std");
 const Md5 = std.crypto.hash.Md5;
 
@@ -36,12 +35,10 @@ fn clearScreen(out: *std.Io.Writer) !void {
 
 fn printMenu(out: *std.Io.Writer, duplicates: std.ArrayListUnmanaged(*FileMeta)) !void {
     const size = duplicates.items[0].size;
-    try out.print("\nFound duplicate (Unique size: {B}, Total size: {B}): \n", .{ size, size * duplicates.items.len });
-    var i: u32 = 0;
-    for (duplicates.items) |dup| {
-        try out.print("{d} -> {s}\n", .{ i, dup.name });
-        i += 1;
-    }
+    const total_size = size * duplicates.items.len;
+    try out.print("\nFound duplicate (Unique size: {B}, Total size: {B}): \n", .{ size, size * total_size });
+    for (duplicates.items, 0..) |dup, i|
+        try out.print("  {d} -> {s}\n", .{ i, dup.name });
     try out.print("Select the file or files to delete separated by spaces:\n:: ", .{});
 }
 
