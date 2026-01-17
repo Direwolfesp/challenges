@@ -33,7 +33,7 @@ fn clearScreen(out: *std.Io.Writer) !void {
 
 fn printMenu(out: *std.Io.Writer, duplicates: std.ArrayListUnmanaged(*FileMeta)) !void {
     const size = duplicates.items[0].size;
-    try out.print("Found duplicate (Unique size: {B}, Total size: {B}): \n", .{ size, size * duplicates.items.len });
+    try out.print("\nFound duplicate (Unique size: {B}, Total size: {B}): \n", .{ size, size * duplicates.items.len });
     var i: u32 = 0;
     for (duplicates.items) |dup| {
         try out.print("{d} -> {s}\n", .{ i, dup.name });
@@ -174,12 +174,12 @@ pub fn main() !void {
                 if (num.len == 0) continue; // skip empty lines
 
                 const index = std.fmt.parseInt(usize, num, 10) catch {
-                    log.err("Bad input '{s}', skipping...", .{num});
+                    log.warn("Bad input '{s}', skipping...", .{num});
                     continue :outer; // try next duplicates
                 };
 
                 if (index < 0 or index >= possible_dup.items.len) {
-                    log.err("Provided index '{d}' out of bounds, skipping...", .{index});
+                    log.warn("Provided index '{d}' out of bounds, skipping...", .{index});
                     continue :outer; // try next duplicates
                 }
 
