@@ -1,3 +1,6 @@
+//! Find duplicate files in a directory (recursively)
+//! and let the user choose which one to delete
+
 const std = @import("std");
 const Md5 = std.crypto.hash.Md5;
 
