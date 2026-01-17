@@ -12,6 +12,7 @@ const FileMeta = struct {
 };
 
 fn mapFile(file: std.fs.File, size: u64) ![]align(std.heap.page_size_min) u8 {
+    if (size == 0) return error.FileIsEmpty;
     return try std.posix.mmap(
         null,
         @intCast(size),
@@ -93,7 +94,7 @@ pub fn main() !void {
 
     // register files based on size
     while (try iter.next()) |entry| {
-        if (entry.kind == .directory) continue;
+        if (entry.kind != .file) continue;
 
         const st = entry.dir.statFile(entry.basename) catch |err| {
             log.err("Could not stat file '{s}': {t}", .{ entry.path, err });
@@ -126,7 +127,10 @@ pub fn main() !void {
                 const file = try dir.openFile(file_meta.name, .{});
                 defer file.close();
 
-                const contents = try mapFile(file, size);
+                const contents = mapFile(file, size) catch |err| switch (err) {
+                    error.FileIsEmpty => continue,
+                    else => return err,
+                };
                 defer std.posix.munmap(contents);
 
                 var hash: [Md5.digest_length]u8 = undefined;
