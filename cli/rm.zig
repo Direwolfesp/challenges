@@ -9,12 +9,12 @@ const File = std.fs.File;
 const log = std.log.scoped(.rm);
 
 const usage =
-    \\Usage: rm [-h | -d | -v | -r ] <...files> 
+    \\Usage: rm [ -h | -d | -v | -r ] <...files> 
     \\ => -h: Show this help
     \\ => -d: Dry run, does not delete anything
     \\ => -v: Verbose, print the files being deleted
     \\ => -r: Recursive, remove subdirectories recursively
-    \\ Note: Combined flags such as '-rf' are not supported
+    \\ Note: Combined flags such as '-rv' are not supported
 ;
 
 const RmOptions = packed struct {
