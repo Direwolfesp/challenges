@@ -1,3 +1,6 @@
+//! A simple `rm` implementation made by hand
+//!
+
 const std = @import("std");
 const fs = std.fs;
 const fmt = std.fmt;
@@ -6,7 +9,7 @@ const File = std.fs.File;
 const log = std.log.scoped(.rm);
 
 const usage =
-    \\Usage: rm [-h | -d] <...files> 
+    \\Usage: rm [-h | -d | -v | -r ] <...files> 
     \\ => -h: Show this help
     \\ => -d: Dry run, does not delete anything
     \\ => -v: Verbose, print the files being deleted
