@@ -11,6 +11,7 @@ const usage =
     \\ => -d: Dry run, does not delete anything
     \\ => -v: Verbose, print the files being deleted
     \\ => -r: Recursive, remove subdirectories recursively
+    \\ Note: Combined flags such as '-rf' are not supported
 ;
 
 const RmOptions = packed struct {
