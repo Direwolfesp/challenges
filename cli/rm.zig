@@ -9,13 +9,15 @@ const File = std.fs.File;
 const log = std.log.scoped(.rm);
 
 const usage =
-    \\Usage: rm [ -h | -d | -v | -r | -f ] <...files> 
+    \\Usage: rm [ -h | -d | -v | -r | -f | -i ] <...files> 
     \\ => -h: Show this help
     \\ => -d: Dry run, does not delete anything
     \\ => -v: Verbose, print the files being deleted
     \\ => -r: Recursive, remove subdirectories recursively
     \\ => -f: Force, suppress error when no file 
+    \\ => -i: Interactive, ask user to confirm action
     \\ Note: Combined flags such as '-rf' are not supported
+    \\ Note: To delete a file that starts with '-', pass '--' first. (Ie. 'rm -- -some_file')
 ;
 
 const RmOptions = packed struct {
@@ -23,20 +25,105 @@ const RmOptions = packed struct {
     verbose: bool,
     recursive: bool,
     force: bool,
+    interactive: bool,
+    end_flags: bool,
 
     pub const default = RmOptions{
         .dry_run = false,
         .verbose = false,
         .recursive = false,
         .force = false,
+        .interactive = false,
+        .end_flags = false,
     };
+
+    const Self = @This();
+
+    /// Parse options. Returns a boolean that specifies if
+    /// the `arg` should be skipped or not.
+    pub fn parse(self: *Self, arg: []const u8) !bool {
+        // caller should skip to next arg
+        const skip = true;
+
+        // If the user has manually passed '--', ignore
+        // the rest of arguments and treat them as filenames.
+        // Thus the caller should not skip it
+        if (self.end_flags) {
+            return !skip;
+        }
+
+        if (std.mem.eql(u8, arg, "-d")) {
+            self.dry_run = true;
+            return skip;
+        } else if (std.mem.eql(u8, arg, "-v")) {
+            self.verbose = true;
+            return skip;
+        } else if (std.mem.eql(u8, arg, "-r")) {
+            self.recursive = true;
+            return skip;
+        } else if (std.mem.eql(u8, arg, "-f")) {
+            self.force = true;
+            return skip;
+        } else if (std.mem.eql(u8, arg, "-i")) {
+            self.interactive = true;
+            return skip;
+        } else if (std.mem.eql(u8, arg, "-h")) {
+            std.debug.print(usage, .{});
+            std.process.exit(0);
+        } else if (std.mem.eql(u8, arg, "--")) {
+            self.end_flags = true;
+            return skip;
+        } else if (arg[0] == '-') { // unescaped unknown flag
+            return error.InvalidFlagArgument;
+        } else {
+            return !skip;
+        } // its a filename
+    }
+
+    /// Asserts logical invariants of flags
+    pub fn verify(self: Self) void {
+        if (self.verbose and self.dry_run) {
+            // you either want to delete them or not
+            log.err("Incompatible flags: -v and -d", .{});
+            std.process.exit(1);
+        } else if (self.interactive and self.dry_run) {
+            // If you do a dry run there is no point in asking to the user
+            log.err("Incompatible flags: -i and -d", .{});
+            std.process.exit(1);
+        }
+    }
 };
 
-const RemoveFileError = fs.Dir.DeleteFileError || fmt.BufPrintError;
+const RemoveFileError = fs.Dir.DeleteFileError || fmt.BufPrintError || error{ ReadFailed, StreamTooLong };
 
 pub fn deleteFileOptions(name: []const u8, opts: RmOptions) RemoveFileError!void {
-    if (opts.dry_run) {
-        log.info("(dry-run) would delete file '{s}'", .{name});
+    const delete = delete: {
+        if (opts.dry_run) {
+            log.info("(dry-run) would delete file '{s}'", .{name});
+            break :delete false;
+        } else if (opts.interactive) {
+            var buf: [1024]u8 = undefined;
+            var stdin_reader = std.fs.File.stdin().reader(&buf);
+            const stdin = &stdin_reader.interface;
+
+            while (true) {
+                std.debug.print("remove '{s}'? [Y/N]: ", .{name});
+                const res = try stdin.takeDelimiter('\n') orelse continue;
+                if (res.len == 1) {
+                    switch (res[0]) {
+                        'Y', 'y' => break :delete true,
+                        'N', 'n' => break :delete false,
+                        else => {},
+                    }
+                }
+                std.debug.print("\r", .{});
+            }
+
+            break :delete true;
+        } else break :delete true;
+    };
+
+    if (!delete) {
         return;
     }
 
@@ -91,7 +178,7 @@ pub fn deleteDirOptions(name: []const u8, opts: RmOptions) RemoveRecursiveError!
     }
 }
 
-const RemoveRecursiveError = fs.Dir.DeleteDirError || fs.Dir.DeleteFileError || fmt.BufPrintError;
+const RemoveRecursiveError = fs.Dir.DeleteDirError || RemoveFileError;
 
 /// Only removes regular files, thus it will fail if the directory contains other
 /// type than regular files
@@ -157,33 +244,19 @@ pub fn main() !void {
     for (1..args.len) |i| {
         const name = args[i];
 
-        // parse options
-        if (std.mem.eql(u8, name, "-d")) {
-            opts.dry_run = true;
+        if (opts.parse(name) catch {
+            log.err("Unknown flag '{s}'", .{name});
+            std.process.exit(1);
+        }) {
             continue;
-        } else if (std.mem.eql(u8, name, "-v")) {
-            opts.verbose = true;
-            continue;
-        } else if (std.mem.eql(u8, name, "-r")) {
-            opts.recursive = true;
-            continue;
-        } else if (std.mem.eql(u8, name, "-f")) {
-            opts.force = true;
-            continue;
-        } else if (std.mem.eql(u8, name, "-h")) {
-            std.debug.print(usage, .{});
-            return;
         }
 
-        if (opts.verbose and opts.dry_run) {
-            log.err("Incompatible flags: -v and -d", .{});
-            std.process.exit(1);
-        }
+        opts.verify();
 
         const stat = fs.cwd().statFile(name) catch |err| switch (err) {
             error.FileNotFound => {
                 if (!opts.force) {
-                    log.err("Cannot remove '{s}', file doesn't exist.", .{name});
+                    log.err("File '{s}' does not exist.", .{name});
                     std.process.exit(1);
                 }
                 continue;
