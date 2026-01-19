@@ -113,6 +113,7 @@ pub fn askConfirmation(file: []const u8) !bool {
     }
 }
 
+/// Handles `interactive` internally
 pub fn deleteFileOptions(name: []const u8, opts: RmOptions) RemoveFileError!void {
     const delete = delete: {
         if (opts.dry_run) {
@@ -226,12 +227,12 @@ fn removeRecursive(
 }
 
 pub fn main() !void {
-    var debug: std.heap.DebugAllocator(.{}) = .init;
-    defer std.debug.assert(debug.deinit() == .ok);
-    const gpa = debug.allocator();
+    var alloc: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer alloc.deinit();
+    const arena = alloc.allocator();
 
-    const args = try std.process.argsAlloc(gpa);
-    defer std.process.argsFree(gpa, args);
+    const args = try std.process.argsAlloc(arena);
+    defer std.process.argsFree(arena, args);
 
     if (args.len < 2) {
         std.debug.print(usage, .{});
@@ -253,6 +254,7 @@ pub fn main() !void {
 
         opts.verify();
 
+        // Gather file type. For missing files panic if force was not provided
         const stat = fs.cwd().statFile(name) catch |err| switch (err) {
             error.FileNotFound => {
                 if (!opts.force) {
@@ -264,12 +266,18 @@ pub fn main() !void {
             else => return err,
         };
 
-        if (opts.interactive and !(try askConfirmation(name))) {
-            return;
-        }
-
         if (stat.kind == .directory) {
-            try deleteDirOptions(name, opts);
+            // if the user says yes, unmark interactive flag
+            // so recursive deletion will no trigger the prompt again
+            if (opts.interactive and try askConfirmation(name)) {
+                opts.interactive = false;
+                try deleteDirOptions(name, opts);
+                opts.interactive = true;
+            }
+            // not interactive, delete it right away
+            else if (!opts.interactive) {
+                try deleteDirOptions(name, opts);
+            }
         } else if (stat.kind == .file) {
             try deleteFileOptions(name, opts);
         }
