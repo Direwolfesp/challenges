@@ -75,9 +75,7 @@ const RmOptions = packed struct {
             return skip;
         } else if (arg[0] == '-') { // unescaped unknown flag
             return error.InvalidFlagArgument;
-        } else {
-            return !skip;
-        } // its a filename
+        } else return !skip; // its a filename
     }
 
     /// Asserts logical invariants of flags
@@ -96,30 +94,32 @@ const RmOptions = packed struct {
 
 const RemoveFileError = fs.Dir.DeleteFileError || fmt.BufPrintError || error{ ReadFailed, StreamTooLong };
 
+pub fn askConfirmation(file: []const u8) !bool {
+    var buf: [1024]u8 = undefined;
+    var stdin_reader = std.fs.File.stdin().reader(&buf);
+    const stdin = &stdin_reader.interface;
+
+    while (true) {
+        std.debug.print("remove '{s}'? [Y/N]: ", .{file});
+        const res = try stdin.takeDelimiter('\n') orelse continue;
+        if (res.len == 1) {
+            switch (res[0]) {
+                'Y', 'y' => return true,
+                'N', 'n' => return false,
+                else => {},
+            }
+        }
+        std.debug.print("\r", .{});
+    }
+}
+
 pub fn deleteFileOptions(name: []const u8, opts: RmOptions) RemoveFileError!void {
     const delete = delete: {
         if (opts.dry_run) {
             log.info("(dry-run) would delete file '{s}'", .{name});
             break :delete false;
         } else if (opts.interactive) {
-            var buf: [1024]u8 = undefined;
-            var stdin_reader = std.fs.File.stdin().reader(&buf);
-            const stdin = &stdin_reader.interface;
-
-            while (true) {
-                std.debug.print("remove '{s}'? [Y/N]: ", .{name});
-                const res = try stdin.takeDelimiter('\n') orelse continue;
-                if (res.len == 1) {
-                    switch (res[0]) {
-                        'Y', 'y' => break :delete true,
-                        'N', 'n' => break :delete false,
-                        else => {},
-                    }
-                }
-                std.debug.print("\r", .{});
-            }
-
-            break :delete true;
+            break :delete try askConfirmation(name);
         } else break :delete true;
     };
 
@@ -263,6 +263,10 @@ pub fn main() !void {
             },
             else => return err,
         };
+
+        if (opts.interactive and !(try askConfirmation(name))) {
+            return;
+        }
 
         if (stat.kind == .directory) {
             try deleteDirOptions(name, opts);
