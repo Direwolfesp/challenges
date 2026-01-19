@@ -9,23 +9,26 @@ const File = std.fs.File;
 const log = std.log.scoped(.rm);
 
 const usage =
-    \\Usage: rm [ -h | -d | -v | -r ] <...files> 
+    \\Usage: rm [ -h | -d | -v | -r | -f ] <...files> 
     \\ => -h: Show this help
     \\ => -d: Dry run, does not delete anything
     \\ => -v: Verbose, print the files being deleted
     \\ => -r: Recursive, remove subdirectories recursively
-    \\ Note: Combined flags such as '-rv' are not supported
+    \\ => -f: Force, suppress error when no file 
+    \\ Note: Combined flags such as '-rf' are not supported
 ;
 
 const RmOptions = packed struct {
     dry_run: bool,
     verbose: bool,
     recursive: bool,
+    force: bool,
 
     pub const default = RmOptions{
         .dry_run = false,
         .verbose = false,
         .recursive = false,
+        .force = false,
     };
 };
 
@@ -37,9 +40,14 @@ pub fn deleteFileOptions(name: []const u8, opts: RmOptions) RemoveFileError!void
         return;
     }
 
-    fs.cwd().deleteFile(name) catch |err| {
-        log.err("Could not delete file '{s}'. Err: {t}", .{ name, err });
-        return err;
+    fs.cwd().deleteFile(name) catch |err| switch (err) {
+        error.FileNotFound => {
+            if (!opts.force) {
+                log.err("Could not delete file '{s}'. {t}", .{ name, err });
+                std.process.exit(1);
+            }
+        },
+        else => return err,
     };
 
     if (opts.verbose) {
@@ -68,6 +76,12 @@ pub fn deleteDirOptions(name: []const u8, opts: RmOptions) RemoveRecursiveError!
                 }
                 try removeRecursive(true, new_name, .directory, opts);
             },
+            error.FileNotFound => {
+                if (!opts.force) {
+                    log.err("Could not delete dir '{s}'. {t}", .{ name, err });
+                    std.process.exit(1);
+                }
+            },
             else => return err,
         };
     }
@@ -81,7 +95,12 @@ const RemoveRecursiveError = fs.Dir.DeleteDirError || fs.Dir.DeleteFileError || 
 
 /// Only removes regular files, thus it will fail if the directory contains other
 /// type than regular files
-fn removeRecursive(comptime is_top: bool, name: []const u8, kind: File.Kind, options: RmOptions) RemoveRecursiveError!void {
+fn removeRecursive(
+    comptime is_top: bool,
+    name: []const u8,
+    kind: File.Kind,
+    options: RmOptions,
+) RemoveRecursiveError!void {
     std.debug.assert(options.recursive);
 
     if (kind == .file) {
@@ -148,6 +167,9 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, name, "-r")) {
             opts.recursive = true;
             continue;
+        } else if (std.mem.eql(u8, name, "-f")) {
+            opts.force = true;
+            continue;
         } else if (std.mem.eql(u8, name, "-h")) {
             std.debug.print(usage, .{});
             return;
@@ -160,8 +182,11 @@ pub fn main() !void {
 
         const stat = fs.cwd().statFile(name) catch |err| switch (err) {
             error.FileNotFound => {
-                log.err("Cannot remove '{s}', file does not exist.", .{name});
-                std.process.exit(1);
+                if (!opts.force) {
+                    log.err("Cannot remove '{s}', file doesn't exist.", .{name});
+                    std.process.exit(1);
+                }
+                continue;
             },
             else => return err,
         };
