@@ -18,15 +18,11 @@ fn usageAndDie(comptime status: u8) noreturn {
 }
 
 const XxdOptions = struct {
-    endiand: enum { big, little },
-    grouping: u32,
-    file: []const u8,
+    endiand: enum { big, little } = .big,
+    grouping: u32 = 4, // clamped by 0..=16
+    file: ?[]const u8 = null,
 
-    pub const init = XxdOptions{
-        .endiand = .big,
-        .grouping = 4, // clamped by 0..=16
-        .file = &.{},
-    };
+    pub const default = XxdOptions{};
 
     const Self = @This();
 
@@ -77,13 +73,16 @@ pub fn main() !void {
     var stdout_wr = std.fs.File.stdout().writer(&stdout_buf);
     const stdout = &stdout_wr.interface;
 
-    var opts: XxdOptions = .init;
+    var opts: XxdOptions = .default;
     opts.parse(args);
 
-    const in_file = std.fs.cwd().openFile(opts.file, .{}) catch |err| file: switch (err) {
-        error.FileNotFound => break :file std.fs.File.stdin(),
-        else => return err,
-    };
+    const in_file = if (opts.file) |file|
+        std.fs.cwd().openFile(file, .{}) catch |err| {
+            log.err("{s}: {t}", .{ file, err });
+            std.process.exit(1);
+        }
+    else
+        std.fs.File.stdin();
 
     var input_buf: [4096]u8 = undefined;
     var input_reader = in_file.reader(&input_buf);
@@ -118,5 +117,9 @@ pub fn main() !void {
         error.ReadFailed => return input_reader.err.?,
     }
 
-    try stdout.flush();
+    // ignore broken pipe
+    stdout.flush() catch if (stdout_wr.err) |err| switch (err) {
+        error.BrokenPipe => {},
+        else => return err,
+    };
 }
