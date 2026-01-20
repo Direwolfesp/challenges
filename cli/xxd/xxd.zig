@@ -89,10 +89,13 @@ pub fn main() !void {
     var input_reader = in_file.reader(&input_buf);
     const input = &input_reader.interface;
 
-    while (input.peek(LINE_SIZE)) |bytes| {
+    var index: u32 = 0;
+
+    while (input.peek(LINE_SIZE)) |bytes| : (index += 0x10) {
         input.toss(LINE_SIZE);
 
-        // TODO
+        try stdout.print("{x:0>8}: ", .{index});
+        // TODO: grouping and ascii representation
         try stdout.print("{x}\n", .{bytes});
 
         // when piping stdout to another process stdin, it
@@ -107,10 +110,13 @@ pub fn main() !void {
             var remaining: [LINE_SIZE]u8 = undefined;
             const read = try input.readSliceShort(&remaining);
             const bytes = remaining[0..read];
-            try stdout.print("{x}", .{bytes});
-            // TODO
+
+            try stdout.print("{x:0>8}: ", .{index});
+            // TODO: grouping and ascii representation
+            try stdout.print("{x} \n", .{bytes});
         },
         error.ReadFailed => return input_reader.err.?,
     }
+
     try stdout.flush();
 }
