@@ -105,15 +105,21 @@ const XxdOptions = struct {
         self.verify(grouping_modified);
     }
 
-    /// Modifies options based on the state of the arguments provided by user
+    /// Sanitize options based on the arguments provided by user.
+    /// Based on the behaviour of xxd:
+    /// - Default grouping is 2
+    /// - '-e' little endian flag changes grouping to 4 if no grouping was provided
+    /// - '-e' little endian flag does not allow non power of 2 grouping
     fn verify(self: *Self, grouping_modified: bool) void {
-        // Based on what xxd does:
-        // - Default grouping is 2
-        // - '-e' little endian flag changes grouping to 4 if no grouping was provided
         if (grouping_modified) {
             self.grouping = std.math.clamp(self.grouping, 0, 16);
             if (self.grouping == 0) {
                 self.grouping = 16;
+            }
+
+            if (self.endian == .little and @popCount(self.grouping) != 1) {
+                log.err("number of octets per group must be a power of 2 with -e", .{});
+                std.process.exit(1);
             }
         } else if (self.endian == .little) {
             self.grouping = 4;
@@ -158,31 +164,38 @@ pub fn main() !void {
     while (input.peek(opts.columns)) |bytes| : (index += opts.columns) {
         input.toss(opts.columns);
 
-        // TODO(abstract): Print index
-        try stdout.print("{x:0>8}: ", .{index});
+        try stdout.print("{x:0>8}:", .{index});
 
-        // Print all groups
-        const num_groups = opts.columns / opts.grouping;
-        for (0..num_groups) |i| {
-            const start = i * opts.grouping;
-            const end = start + opts.grouping;
-
-            if (opts.endian == .big) {
-                try stdout.print("{x} ", .{bytes[start .. start + opts.grouping]});
-            } else if (opts.endian == .little) {
-                var j = end - 1;
-                while (j >= start) : (j -= 1) {
-                    try stdout.print("{x:0>2}", .{bytes[j]});
-                    if (j == 0) break;
-                }
-                try stdout.writeByte(' ');
+        var padded = false;
+        for (0..bytes.len) |i| {
+            if (opts.endian == .little) {
+                // do reverse index calculation
+                const backward = i % opts.grouping;
+                const maybe_end = (i + (opts.grouping - backward));
+                const next_end = if (maybe_end >= opts.columns) end: {
+                    // print padding spaces
+                    if (!padded) {
+                        padded = true;
+                        const spaces = (maybe_end - opts.columns) + 1;
+                        try stdout.splatByteAll(' ', spaces);
+                    }
+                    break :end opts.columns;
+                } else maybe_end;
+                const r_index = next_end - backward - 1;
+                try stdout.print("{s}{x:0>2}", .{
+                    if (r_index == opts.grouping - 1 or i % opts.grouping == 0) " " else "",
+                    bytes[r_index],
+                });
+            } else if (opts.endian == .big) {
+                try stdout.print("{s}{x:0>2}", .{
+                    if (i % opts.grouping == 0) " " else "",
+                    bytes[i],
+                });
             }
         }
 
-        // TODO(abstract): separator
-        try stdout.writeByte(' ');
+        try stdout.writeAll("  ");
 
-        // //TODO(abstract): Print: ascii view
         for (bytes) |b| {
             if (std.ascii.isAlphanumeric(b)) {
                 try stdout.print("{c}", .{b});
