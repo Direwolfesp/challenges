@@ -182,16 +182,31 @@ const XxdOptions = struct {
     }
 
     fn getColor(self: Self, byte: u8) []const u8 {
-        return if (std.ascii.isAlphanumeric(byte))
+        return if (std.ascii.isPrint(byte))
             self.printable_color
-        else if (byte == ' ')
+        else if (std.ascii.isWhitespace(byte))
             self.white_space_color
+        else if (std.ascii.isControl(byte))
+            self.ascii_other_color
         else if (byte == 0x00)
             self.null_byte_color
-        else if (std.ascii.isAscii(byte))
-            self.ascii_other_color
-        else
+        else // binary
             self.non_ascii_color;
+    }
+
+    fn getChar(self: Self, byte: u8) u8 {
+        _ = self;
+
+        return if (std.ascii.isPrint(byte))
+            byte
+        else if (std.ascii.isWhitespace(byte))
+            '_'
+        else if (std.ascii.isControl(byte))
+            '.'
+        else if (byte == 0x00)
+            ' '
+        else
+            'x';
     }
 };
 
@@ -258,11 +273,11 @@ pub fn processLineOptions(bytes: []const u8, index: u32, out: *std.Io.Writer, op
 
     // print ascii representation
     for (bytes) |b| {
-        if (std.ascii.isAlphanumeric(b)) {
-            try out.print("{c}", .{b});
-        } else {
-            try out.print(".", .{});
-        }
+        try out.print("{s}{c}{s}", .{
+            opts.getColor(b),
+            opts.getChar(b),
+            opts.reset,
+        });
     }
     try out.print("\n", .{});
 }
