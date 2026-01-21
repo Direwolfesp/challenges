@@ -4,7 +4,7 @@ const std = @import("std");
 
 const log = std.log.scoped(.xxd);
 
-// TODO: implement -e, -g <bytes>, -l <length>, -c <columns>, -s <seek>
+// TODO: implement -l <length>, -s <seek>
 // - each line always prints 16 bytes of the file at maximum unless set by -c
 // - '-s' seek should just exist successfully if the provided value is greater
 //   than the input at runtime
@@ -132,6 +132,49 @@ const XxdOptions = struct {
     }
 };
 
+fn processLineOptions(bytes: []const u8, index: u32, out: *std.Io.Writer, opts: XxdOptions) !void {
+    try out.print("{x:0>8}:", .{index});
+
+    var padded = false;
+    for (0..bytes.len) |i| {
+        if (opts.endian == .little) {
+            // do reverse index calculation
+            const backward = i % opts.grouping;
+            const maybe_end = (i + (opts.grouping - backward));
+            const next_end = if (maybe_end >= opts.columns) end: {
+                // print padding spaces
+                if (!padded) {
+                    padded = true;
+                    const spaces = (maybe_end - opts.columns) + 1;
+                    try out.splatByteAll(' ', spaces);
+                }
+                break :end opts.columns;
+            } else maybe_end;
+            const r_index = next_end - backward - 1;
+            try out.print("{s}{x:0>2}", .{
+                if (r_index == opts.grouping - 1 or i % opts.grouping == 0) " " else "",
+                bytes[r_index],
+            });
+        } else if (opts.endian == .big) {
+            try out.print("{s}{x:0>2}", .{
+                if (i % opts.grouping == 0) " " else "",
+                bytes[i],
+            });
+        }
+    }
+
+    try out.writeAll("  ");
+
+    for (bytes) |b| {
+        if (std.ascii.isAlphanumeric(b)) {
+            try out.print("{c}", .{b});
+        } else {
+            try out.print(".", .{});
+        }
+    }
+    try out.print("\n", .{});
+}
+
 pub fn main() !void {
     var alloc: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer alloc.deinit();
@@ -163,47 +206,7 @@ pub fn main() !void {
 
     while (input.peek(opts.columns)) |bytes| : (index += opts.columns) {
         input.toss(opts.columns);
-
-        try stdout.print("{x:0>8}:", .{index});
-
-        var padded = false;
-        for (0..bytes.len) |i| {
-            if (opts.endian == .little) {
-                // do reverse index calculation
-                const backward = i % opts.grouping;
-                const maybe_end = (i + (opts.grouping - backward));
-                const next_end = if (maybe_end >= opts.columns) end: {
-                    // print padding spaces
-                    if (!padded) {
-                        padded = true;
-                        const spaces = (maybe_end - opts.columns) + 1;
-                        try stdout.splatByteAll(' ', spaces);
-                    }
-                    break :end opts.columns;
-                } else maybe_end;
-                const r_index = next_end - backward - 1;
-                try stdout.print("{s}{x:0>2}", .{
-                    if (r_index == opts.grouping - 1 or i % opts.grouping == 0) " " else "",
-                    bytes[r_index],
-                });
-            } else if (opts.endian == .big) {
-                try stdout.print("{s}{x:0>2}", .{
-                    if (i % opts.grouping == 0) " " else "",
-                    bytes[i],
-                });
-            }
-        }
-
-        try stdout.writeAll("  ");
-
-        for (bytes) |b| {
-            if (std.ascii.isAlphanumeric(b)) {
-                try stdout.print("{c}", .{b});
-            } else {
-                try stdout.print(".", .{});
-            }
-        }
-        try stdout.print("\n", .{});
+        try processLineOptions(bytes, index, stdout, opts);
 
         // when piping stdout to another process stdin, it
         // could stop reading from us in any moment
@@ -213,12 +216,12 @@ pub fn main() !void {
         };
     } else |err| switch (err) {
         // small input treatment
+        //TODO: panic when -e is used: OoB
         error.EndOfStream => {
             var remaining: [XxdOptions.columnsMax]u8 = undefined;
             const read = try input.readSliceShort(&remaining);
             const bytes = remaining[0..read];
-            _ = bytes;
-            @panic("TODO: do the same as in the loop");
+            try processLineOptions(bytes, index, stdout, opts);
         },
         error.ReadFailed => return input_reader.err.?,
     }
