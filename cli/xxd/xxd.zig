@@ -4,10 +4,6 @@ const std = @import("std");
 
 const log = std.log.scoped(.xxd);
 
-// TODO: implement -l <length>, -R <color>
-// - each line always prints 16 bytes of the file at maximum unless set by -c
-// - '-s' seek should just exist successfully if the provided value is greater
-//   than the input at runtime
 const usage_msg =
     \\Usage: xxd [ -e | -g <bytes> | -c <columns> | -l <length> | -s <seek> | -R <color> | -h ] <file> 
     \\ => -h: Help, show this help
@@ -15,7 +11,7 @@ const usage_msg =
     \\ => -g: Grouping, select the number of bytes in each group (default: 2)
     \\ => -l: Length, how many bytes to show in total (default: inf)
     \\ => -c: Columns, the amount of bytes to show per row (default: 16)
-    \\ => -s: Seek, start at that offset from the file (default: 0)
+    \\ => -s: Seek, start at <seek> bytes abs. (or +: rel.) infile offset. (default: 0)
     \\ => -R: Color, can be 'always', 'auto' or 'never' (default: auto)
     \\ => <file>: Input file that will be read (default: stdin)
     \\ Note: Combined short flags such as `-el 1` are not supported.
@@ -36,16 +32,29 @@ const Colors = struct {
     const none = "";
 };
 
+/// Core attributes and state of the program
 const XxdOptions = struct {
-    // Core attributes
+    /// byte ordering
     endian: std.builtin.Endian = endianDefault,
-    grouping: u32 = groupingDefault, // clamped by 0..=16
+    /// clamped by 0..=16
+    grouping: u32 = groupingDefault,
+    /// file from which we get the input
     file: ?[]const u8 = null,
+    /// number of **input** bytes that will be displayed per row
     columns: u8 = columnsDefault,
+    /// where to start reading from the file
     seek: i64 = 0,
-    processed: u64 = 0, // will trigger request_stop when it reaches `self.length`
-    request_stop: bool = false, // stop processing bytes
+    /// the amount of bytes that will be read at max from the file
     length: u64 = std.math.maxInt(u64),
+    /// will trigger request_stop when it reaches `self.length`
+    processed: u64 = 0,
+    /// internal flag to stop processing bytes
+    request_stop: bool = false,
+    /// the amount of bytes the hex view will span, taking into account groups,
+    /// length and spaces, so that the ascii view is not misaligned
+    span: u64 = 0,
+    /// When to output ansi colors. By default, colors will be disabled when
+    /// stdout is not a tty (ie. a file or other program)
     colored_output: enum { auto, always, never } = .auto,
 
     // Color config attributes
@@ -144,6 +153,8 @@ const XxdOptions = struct {
     /// - Default grouping is 2
     /// - '-e' little endian flag changes grouping to 4 if no grouping was provided
     /// - '-e' little endian flag does not allow non power of 2 grouping
+    /// - cap columns limit
+    /// - colored output
     fn verify(self: *Self, grouping_modified: bool) void {
         if (grouping_modified) {
             self.grouping = std.math.clamp(self.grouping, 0, 16);
@@ -170,6 +181,9 @@ const XxdOptions = struct {
         } else if (self.colored_output == .never) {
             self.disableColors();
         }
+
+        const bytes_per_group = std.math.divCeil(u32, @intCast(self.columns), self.grouping) catch unreachable; // SAFETY: there is a 0 check of self.grouping above
+        self.span = (2 * self.columns) + bytes_per_group + 1;
     }
 
     fn disableColors(self: *Self) void {
@@ -196,7 +210,6 @@ const XxdOptions = struct {
 
     fn getChar(self: Self, byte: u8) u8 {
         _ = self;
-
         return if (std.ascii.isPrint(byte))
             byte
         else if (std.ascii.isWhitespace(byte))
@@ -256,20 +269,24 @@ pub fn processLineOptions(bytes: []const u8, index: u32, out: *std.Io.Writer, op
         opts.reset,
     });
 
+    // track the ammount of spaces we will need after printing the bytes
+    var to_span = opts.span;
+
     // print all groups
-    const groups = try std.math.divCeil(u32, @intCast(bytes.len), opts.grouping);
-    for (0..groups) |i| {
+    const n_groups = try std.math.divCeil(u32, @intCast(bytes.len), opts.grouping);
+    for (0..n_groups) |i| {
         const start = i * opts.grouping;
         const end = @min(bytes.len, (start + opts.grouping));
         const group = bytes[start..end];
         try printSliceHexEndianOptions(out, group, opts.endian, opts);
         if (opts.request_stop)
             break;
+        to_span -= (2 * group.len) + 1;
         try out.writeByte(' ');
     }
 
     // add some padding
-    _ = try out.splatByteAll(' ', 1);
+    _ = try out.splatByteAll(' ', to_span);
 
     // print ascii representation
     for (bytes) |b| {
@@ -282,7 +299,9 @@ pub fn processLineOptions(bytes: []const u8, index: u32, out: *std.Io.Writer, op
     try out.print("\n", .{});
 }
 
-/// Calculates global file offset based on the relative seek argument
+/// Calculates final file offset based on the seek argument.
+/// A negative value will seek backwards from the end `seek` bytes.
+/// Seeking before the byte 0 will result in an error.
 pub fn calcSeekPosition(file: std.fs.File, seek: i64) !u64 {
     return if (seek < 0) blk: {
         const st = try file.stat();
