@@ -261,7 +261,7 @@ fn printSliceHexEndianOptions(
     }
 }
 
-pub fn processLineOptions(bytes: []const u8, index: u32, out: *std.Io.Writer, opts: *XxdOptions) !void {
+pub fn processLineOptions(bytes: []const u8, index: u64, out: *std.Io.Writer, opts: *XxdOptions) !void {
     // print index
     try out.print("{s}{x:0>8}{s}: ", .{
         opts.printable_color,
@@ -347,7 +347,7 @@ pub fn main() !void {
     const seek_pos = try calcSeekPosition(in_file, opts.seek);
     try input_reader.seekTo(seek_pos);
 
-    var index: u32 = 0;
+    var index: u64 = seek_pos;
 
     while (input.peek(opts.columns)) |bytes| : (index += opts.columns) {
         // we reached desired `length`
