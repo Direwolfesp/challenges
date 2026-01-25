@@ -40,6 +40,8 @@ const XxdOptions = struct {
     grouping: u32 = groupingDefault,
     /// file from which we get the input
     file: ?[]const u8 = null,
+    /// whether or not the file refers to a tty
+    isTty: bool = true,
     /// number of **input** bytes that will be displayed per row
     columns: u8 = columnsDefault,
     /// where to start reading from the file
@@ -175,14 +177,18 @@ const XxdOptions = struct {
             std.process.exit(1);
         }
 
+        self.isTty = std.fs.File.stdout().isTty();
+
         // set colored output, the user can set it: disabled/enabled/automatic
-        if (!std.fs.File.stdout().isTty() and self.colored_output == .auto) {
+        if (!self.isTty and self.colored_output == .auto) {
             self.disableColors();
         } else if (self.colored_output == .never) {
             self.disableColors();
         }
 
-        const bytes_per_group = std.math.divCeil(u32, @intCast(self.columns), self.grouping) catch unreachable; // SAFETY: there is a 0 check of self.grouping above
+        // SAFETY: there is a 0 check of self.grouping above
+        const bytes_per_group = std.math.divCeil(u32, @intCast(self.columns), self.grouping) catch
+            unreachable;
         self.span = (2 * self.columns) + bytes_per_group + 1;
     }
 
@@ -358,12 +364,13 @@ pub fn main() !void {
         input.toss(opts.columns);
         try processLineOptions(bytes, index, stdout, &opts);
 
-        // when piping stdout to another process stdin, it
-        // could stop reading from us in any moment (ie. user presses CTRL-C)
-        stdout.flush() catch if (stdout_wr.err) |err| switch (err) {
-            error.BrokenPipe => break,
-            else => return err,
-        };
+        // Only flush when attached to a terminal
+        if (opts.isTty) {
+            stdout.flush() catch if (stdout_wr.err) |err| switch (err) {
+                error.BrokenPipe => break,
+                else => return err,
+            };
+        }
     } else |err| switch (err) {
         error.EndOfStream => { // small input treatment
             var remaining: [XxdOptions.columnsMax]u8 = undefined;
@@ -375,7 +382,8 @@ pub fn main() !void {
         error.ReadFailed => return input_reader.err.?,
     }
 
-    // ignore broken pipe
+    // when piping stdout to another process stdin, it
+    // could stop reading from us in any moment (ie. user presses CTRL-C)
     stdout.flush() catch if (stdout_wr.err) |err| switch (err) {
         error.BrokenPipe => {},
         else => return err,
