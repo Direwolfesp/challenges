@@ -72,9 +72,7 @@ pub fn main() !void {
     defer std.process.argsFree(arena, args);
 
     if (args.len != 2) {
-        std.log.err(
-            \\Usage: ./key_logger <device_file>. Elevated privileges may be needed.
-        , .{});
+        std.log.err("Usage: ./key_logger <device_file>. Elevated privileges may be needed.", .{});
         std.process.exit(1);
     }
 

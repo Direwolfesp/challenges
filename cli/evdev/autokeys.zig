@@ -6,9 +6,9 @@ const std = @import("std");
 const linux = @cImport(@cInclude("linux/input.h"));
 
 const KeyAction = enum(i32) {
-    PRESSED = 1,
-    RELEASED = 0,
-    HOLD = 2,
+    pressed = 1,
+    released = 0,
+    hold = 2,
 };
 
 const KeyCode = enum(i32) {
@@ -85,7 +85,7 @@ const KeyCode = enum(i32) {
     }
 };
 
-fn syncEventFromKey(key: KeyCode) linux.input_event {
+fn syncEvent(key: KeyCode) linux.input_event {
     var sync_ev: linux.input_event = .{
         .type = linux.EV_MSC,
         .code = linux.MSC_SCAN,
@@ -136,11 +136,11 @@ pub fn main() !void {
     for (text) |b| {
         const key = KeyCode.fromString(b) orelse continue;
 
-        const sync_ev = syncEventFromKey(key);
-        const key_press = keyEvent(key, .PRESSED);
-        const sync2_ev = syncEventFromKey(key);
-        const key_release = keyEvent(key, .RELEASED);
-        const sync3_ev = syncEventFromKey(key);
+        const sync_ev = syncEvent(key);
+        const key_press = keyEvent(key, .pressed);
+        const sync2_ev = syncEvent(key);
+        const key_release = keyEvent(key, .released);
+        const sync3_ev = syncEvent(key);
 
         try file.writeStruct(sync_ev, .little);
         try file.writeStruct(key_press, .little);
