@@ -75,12 +75,12 @@ const XxdOptions = struct {
 
     const Self = @This();
 
-    pub fn parse(self: *Self, args: []const []const u8) void {
+    pub fn parse(self: *Self, io: std.Io, args: []const [*:0]const u8) !void {
         var i: u32 = 1;
         var grouping_modified = false;
 
         while (i < args.len) : (i += 1) {
-            const curr = args[i];
+            const curr: []const u8 = std.mem.span(args[i]);
             if (std.mem.eql(u8, curr, "-h")) {
                 usageAndDie(0);
             } else if (std.mem.eql(u8, curr, "-e")) {
@@ -88,7 +88,7 @@ const XxdOptions = struct {
             } else if (std.mem.eql(u8, curr, "-g")) {
                 if (i < args.len - 1) {
                     i += 1;
-                    const value = args[i];
+                    const value: []const u8 = std.mem.span(args[i]);
                     self.grouping = std.fmt.parseInt(u32, value, 10) catch groupingDefault;
                     grouping_modified = true;
                 } else {
@@ -98,7 +98,7 @@ const XxdOptions = struct {
             } else if (std.mem.eql(u8, curr, "-c")) {
                 if (i < args.len - 1) {
                     i += 1;
-                    const value = args[i];
+                    const value: []const u8 = std.mem.span(args[i]);
                     self.columns = std.fmt.parseInt(u8, value, 10) catch columnsDefault;
                 } else {
                     log.err("Missing <columns> argument for -c", .{});
@@ -107,7 +107,7 @@ const XxdOptions = struct {
             } else if (std.mem.eql(u8, curr, "-l")) {
                 if (i < args.len - 1) {
                     i += 1;
-                    const value = args[i];
+                    const value: []const u8 = std.mem.span(args[i]);
                     self.length = std.fmt.parseInt(u64, value, 10) catch std.math.maxInt(u64);
                 } else {
                     log.err("Missing <length> argument for -l", .{});
@@ -116,7 +116,7 @@ const XxdOptions = struct {
             } else if (std.mem.eql(u8, curr, "-s")) {
                 if (i < args.len - 1) {
                     i += 1;
-                    const value = args[i];
+                    const value: []const u8 = std.mem.span(args[i]);
                     self.seek = std.fmt.parseInt(i64, value, 10) catch 0;
                 } else {
                     log.err("Missing <seek> argument for -s", .{});
@@ -125,7 +125,7 @@ const XxdOptions = struct {
             } else if (std.mem.eql(u8, curr, "-R")) {
                 if (i < args.len - 1) {
                     i += 1;
-                    const value = args[i];
+                    const value: []const u8 = std.mem.span(args[i]);
                     self.colored_output = if (std.mem.eql(u8, value, "auto"))
                         .auto
                     else if (std.mem.eql(u8, value, "never"))
@@ -147,7 +147,7 @@ const XxdOptions = struct {
             }
         }
 
-        self.verify(grouping_modified);
+        try self.verify(io, grouping_modified);
     }
 
     /// Sanitize options based on the arguments provided by user.
@@ -157,7 +157,7 @@ const XxdOptions = struct {
     /// - '-e' little endian flag does not allow non power of 2 grouping
     /// - cap columns limit
     /// - colored output
-    fn verify(self: *Self, grouping_modified: bool) void {
+    fn verify(self: *Self, io: std.Io, grouping_modified: bool) !void {
         if (grouping_modified) {
             self.grouping = std.math.clamp(self.grouping, 0, 16);
             if (self.grouping == 0) {
@@ -177,7 +177,7 @@ const XxdOptions = struct {
             std.process.exit(1);
         }
 
-        self.isTty = std.fs.File.stdout().isTty();
+        self.isTty = try std.Io.File.stdout().isTty(io);
 
         // set colored output, the user can set it: disabled/enabled/automatic
         if (!self.isTty and self.colored_output == .auto) {
@@ -308,9 +308,9 @@ pub fn processLineOptions(bytes: []const u8, index: u64, out: *std.Io.Writer, op
 /// Calculates final file offset based on the seek argument.
 /// A negative value will seek backwards from the end `seek` bytes.
 /// Seeking before the byte 0 will result in an error.
-pub fn calcSeekPosition(file: std.fs.File, seek: i64) !u64 {
+pub fn calcSeekPosition(io: std.Io, file: std.Io.File, seek: i64) !u64 {
     return if (seek < 0) blk: {
-        const st = try file.stat();
+        const st = try file.stat(io);
 
         // prevent seeking backwards out of bounds
         if (@abs(seek) > st.size) {
@@ -322,35 +322,31 @@ pub fn calcSeekPosition(file: std.fs.File, seek: i64) !u64 {
     } else @abs(seek);
 }
 
-pub fn main() !void {
-    var alloc: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer alloc.deinit();
-    const arena = alloc.allocator();
-
-    const args = try std.process.argsAlloc(arena);
-    defer std.process.argsFree(arena, args);
+pub fn main(init: std.process.Init) !void {
+    const args = init.minimal.args.vector;
+    const io = init.io;
 
     var stdout_buf: [4096]u8 = undefined;
-    var stdout_wr = std.fs.File.stdout().writer(&stdout_buf);
+    var stdout_wr = std.Io.File.stdout().writer(io, &stdout_buf);
     const stdout = &stdout_wr.interface;
 
     var opts: XxdOptions = .{};
-    opts.parse(args);
+    try opts.parse(io, args);
 
     const in_file = if (opts.file) |file|
-        std.fs.cwd().openFile(file, .{}) catch |err| {
+        std.Io.Dir.cwd().openFile(io, file, .{}) catch |err| {
             log.err("{s}: {t}", .{ file, err });
             std.process.exit(1);
         }
     else
-        std.fs.File.stdin();
+        std.Io.File.stdin();
 
     var input_buf: [4096]u8 = undefined;
-    var input_reader = in_file.reader(&input_buf);
+    var input_reader = in_file.reader(io, &input_buf);
     const input = &input_reader.interface;
 
     // seek the input
-    const seek_pos = try calcSeekPosition(in_file, opts.seek);
+    const seek_pos = try calcSeekPosition(io, in_file, opts.seek);
     try input_reader.seekTo(seek_pos);
 
     var index: u64 = seek_pos;
