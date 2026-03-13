@@ -1,0 +1,3 @@
+### Strace solution in zig
+
+
