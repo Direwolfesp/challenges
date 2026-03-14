@@ -2,9 +2,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const linux = std.os.linux;
 
+const user = @cImport(@cInclude("sys/user.h"));
 const log = std.log.scoped(.strace);
 
-const Tracee = struct {
+const StraceOptions = struct {
     /// program name
     name: []const u8,
     /// program arguments
@@ -14,7 +15,7 @@ const Tracee = struct {
 
     const usage = "Usage: strace [ -h | --help | -c | --summary-only ] <prog> [args...]";
 
-    pub fn init(gpa: Allocator, argv: []const [*:0]const u8) !Tracee {
+    pub fn init(gpa: Allocator, argv: []const [*:0]const u8) !StraceOptions {
         var args: std.ArrayList([]const u8) = .empty;
         defer args.deinit(gpa);
         var summary = false;
@@ -44,7 +45,7 @@ const Tracee = struct {
         };
     }
 
-    pub fn deinit(self: *Tracee, gpa: Allocator) void {
+    pub fn deinit(self: *StraceOptions, gpa: Allocator) void {
         for (self.args) |a|
             gpa.free(a);
         gpa.free(self.args);
@@ -57,24 +58,61 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const args = init.minimal.args.vector;
 
-    var t: Tracee = try .init(gpa, args);
+    var t: StraceOptions = try .init(gpa, args);
     defer t.deinit(gpa);
 
-    const child = linux.fork();
+    const child: i32 = @intCast(linux.fork());
     if (child == 0) { // child
         var shit = try gpa.alloc([]const u8, t.args.len + 1);
         shit[0] = t.name;
         @memcpy(shit[1..], t.args);
+
+        const r = linux.ptrace(linux.PTRACE.TRACEME, 0, 0, 0, 0);
+        if (r == -1) {
+            std.process.fatal("Could not trace child: {t}", .{std.c.errno(r)});
+        }
+
+        // redirect child stdout and stderr to null device.
+        const file = try std.Io.Dir.openFileAbsolute(init.io, "/dev/null", .{ .mode = .write_only });
+        _ = linux.dup2(file.handle, linux.STDOUT_FILENO);
+        _ = linux.dup2(file.handle, linux.STDERR_FILENO);
+
         switch (std.process.replace(init.io, .{ .argv = shit })) {
-            else => |err| std.process.fatal("Cant spawn child: {t}", .{err}),
+            else => |err| std.process.fatal("Could not spawn child: {t}", .{err}),
         }
     } else if (child > 0) { // parent
-        if (t.summary) {
-            log.debug("summary is on", .{});
+        const r = linux.ptrace(linux.PTRACE.SYSCALL, child, 0, 0, 0);
+        if (r == -1) {
+            std.process.fatal("Could not trace syscalls: {t}", .{std.c.errno(r)});
         }
-        const ret = std.c.waitpid(@intCast(child), null, 0);
-        if (ret == -1) {
-            log.err("waitpid: {t}", .{linux.errno(@intCast(ret))});
+
+        var status: c_int = 0;
+        var enter = false;
+        while (std.c.waitpid(child, &status, 0) != -1) {
+            // the child was stopped by a signal
+            if (std.c.W.IFSTOPPED(@intCast(status))) {
+                // TODO:
+                var regs = std.mem.zeroes(user.user_regs_struct);
+                if (linux.ptrace(linux.PTRACE.GETREGS, child, 0, @intFromPtr(&regs), 0) == -1) {
+                    log.err("strace getregs failed", .{});
+                }
+
+                const syscall: linux.syscalls.X64 = @enumFromInt(regs.orig_rax);
+                if (!enter) {
+                    std.debug.print("{t}({d}, {d}, {d}) = {d}\n", .{
+                        syscall,
+                        regs.rdi,
+                        regs.rsi,
+                        regs.rdx,
+                        regs.rax,
+                    });
+                }
+
+                if (linux.ptrace(linux.PTRACE.SYSCALL, child, 0, 0, 0) == -1) {
+                    log.err("strace syscall failed", .{});
+                }
+                enter = !enter;
+            }
         }
     } else {
         log.err("Could not fork", .{});
