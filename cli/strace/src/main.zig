@@ -91,15 +91,17 @@ pub fn main(init: std.process.Init) !void {
         while (std.c.waitpid(child, &status, 0) != -1) {
             // the child was stopped by a signal
             if (std.c.W.IFSTOPPED(@intCast(status))) {
-                // TODO:
                 var regs = std.mem.zeroes(user.user_regs_struct);
                 if (linux.ptrace(linux.PTRACE.GETREGS, child, 0, @intFromPtr(&regs), 0) == -1) {
                     log.err("strace getregs failed", .{});
                 }
 
-                const syscall: linux.syscalls.X64 = @enumFromInt(regs.orig_rax);
+                const syscall = std.enums.fromInt(linux.syscalls.X64, regs.orig_rax) orelse {
+                    std.process.fatal("Unkown syscall number: {d}", .{regs.orig_rax});
+                };
+
                 if (!enter) {
-                    std.debug.print("{t}({d}, {d}, {d}) = {d}\n", .{
+                    std.debug.print("{t}({d}, {d}, {d}, ...) = {d}\n", .{
                         syscall,
                         regs.rdi,
                         regs.rsi,
