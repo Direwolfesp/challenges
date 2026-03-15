@@ -255,11 +255,9 @@ pub fn main(init: std.process.Init) !void {
         // Gather file type. For missing files panic if force was not provided
         const stat = Dir.cwd().statFile(io, name, .{}) catch |err| switch (err) {
             error.FileNotFound => {
-                if (!opts.force) {
-                    log.err("File '{s}' does not exist.", .{name});
-                    std.process.exit(1);
-                }
-                continue;
+                if (opts.force)
+                    continue;
+                std.process.fatal("File '{s}' does not exist.", .{name});
             },
             else => return err,
         };
