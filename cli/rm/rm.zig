@@ -2,9 +2,10 @@
 //!
 
 const std = @import("std");
-const fs = std.fs;
 const fmt = std.fmt;
-const File = std.fs.File;
+const Io = std.Io;
+const File = std.Io.File;
+const Dir = std.Io.Dir;
 
 const log = std.log.scoped(.rm);
 
@@ -92,11 +93,11 @@ const RmOptions = packed struct {
     }
 };
 
-const RemoveFileError = fs.Dir.DeleteFileError || fmt.BufPrintError || error{ ReadFailed, StreamTooLong };
+const RemoveFileError = Dir.DeleteFileError || fmt.BufPrintError || error{ ReadFailed, StreamTooLong };
 
-pub fn askConfirmation(file: []const u8) !bool {
+pub fn askConfirmation(io: Io, file: []const u8) !bool {
     var buf: [1024]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&buf);
+    var stdin_reader = File.stdin().reader(io, &buf);
     const stdin = &stdin_reader.interface;
 
     while (true) {
@@ -114,21 +115,21 @@ pub fn askConfirmation(file: []const u8) !bool {
 }
 
 /// Handles `interactive` internally
-pub fn deleteFileOptions(name: []const u8, opts: RmOptions) RemoveFileError!void {
-    const delete = delete: {
+pub fn deleteFileOptions(io: Io, name: []const u8, opts: RmOptions) RemoveFileError!void {
+    const delete = blk: {
         if (opts.dry_run) {
             log.info("(dry-run) would delete file '{s}'", .{name});
-            break :delete false;
+            break :blk false;
         } else if (opts.interactive) {
-            break :delete try askConfirmation(name);
-        } else break :delete true;
+            break :blk try askConfirmation(io, name);
+        } else break :blk true;
     };
 
     if (!delete) {
         return;
     }
 
-    fs.cwd().deleteFile(name) catch |err| switch (err) {
+    Dir.cwd().deleteFile(io, name) catch |err| switch (err) {
         error.FileNotFound => {
             if (!opts.force) {
                 log.err("Could not delete file '{s}'. {t}", .{ name, err });
@@ -143,8 +144,8 @@ pub fn deleteFileOptions(name: []const u8, opts: RmOptions) RemoveFileError!void
     }
 }
 
-pub fn deleteDirOptions(name: []const u8, opts: RmOptions) RemoveRecursiveError!void {
-    var name_buf: [fs.max_name_bytes]u8 = undefined;
+pub fn deleteDirOptions(io: Io, name: []const u8, opts: RmOptions) RemoveRecursiveError!void {
+    var name_buf: [Dir.max_name_bytes]u8 = undefined;
     const new_name = if (name[name.len - 1] != '/')
         try fmt.bufPrint(&name_buf, "{s}/", .{name})
     else
@@ -153,16 +154,16 @@ pub fn deleteDirOptions(name: []const u8, opts: RmOptions) RemoveRecursiveError!
     if (opts.dry_run) {
         log.info("(dry-run) would delete dir '{s}'", .{new_name});
         if (opts.recursive) {
-            try removeRecursive(true, new_name, .directory, opts);
+            try removeRecursive(io, true, new_name, .directory, opts);
         }
     } else {
-        fs.cwd().deleteDir(new_name) catch |err| switch (err) {
+        Dir.cwd().deleteDir(io, new_name) catch |err| switch (err) {
             error.DirNotEmpty => {
                 if (!opts.recursive) {
                     log.err("cannot remove non-empty directory, consider using '-r' flag.", .{});
                     std.process.exit(1);
                 }
-                try removeRecursive(true, new_name, .directory, opts);
+                try removeRecursive(io, true, new_name, .directory, opts);
             },
             error.FileNotFound => {
                 if (!opts.force) {
@@ -179,11 +180,12 @@ pub fn deleteDirOptions(name: []const u8, opts: RmOptions) RemoveRecursiveError!
     }
 }
 
-const RemoveRecursiveError = fs.Dir.DeleteDirError || RemoveFileError;
+const RemoveRecursiveError = Dir.DeleteDirError || RemoveFileError;
 
 /// Only removes regular files, thus it will fail if the directory contains other
 /// type than regular files
 fn removeRecursive(
+    io: Io,
     comptime is_top: bool,
     name: []const u8,
     kind: File.Kind,
@@ -192,20 +194,21 @@ fn removeRecursive(
     std.debug.assert(options.recursive);
 
     if (kind == .file) {
-        try deleteFileOptions(name, options);
+        try deleteFileOptions(io, name, options);
     } else if (kind == .directory) {
-        var dir = fs.cwd().openDir(name, .{ .iterate = true }) catch |err| {
+        var dir = Dir.cwd().openDir(io, name, .{ .iterate = true }) catch |err| {
             log.err("Could not open directory '{s}': {t}", .{ name, err });
             return;
         };
-        defer dir.close();
+        defer dir.close(io);
 
         // iterate subdirs
         var iter = dir.iterate();
-        while (iter.next()) |sub| {
+        while (iter.next(io)) |sub| {
             if (sub == null) break;
-            var path_buf: [fs.max_path_bytes]u8 = undefined;
+            var path_buf: [Dir.max_path_bytes]u8 = undefined;
             try removeRecursive(
+                io,
                 false,
                 if (is_top)
                     try fmt.bufPrint(&path_buf, "{s}{s}", .{ name, sub.?.name })
@@ -221,18 +224,15 @@ fn removeRecursive(
 
         // remove itself (no logging as the caller will do it)
         if (!options.dry_run) {
-            try fs.cwd().deleteDir(name);
+            try Dir.cwd().deleteDir(io, name);
         }
     }
 }
 
-pub fn main() !void {
-    var alloc: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer alloc.deinit();
-    const arena = alloc.allocator();
-
-    const args = try std.process.argsAlloc(arena);
-    defer std.process.argsFree(arena, args);
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(arena);
+    const io = init.io;
 
     if (args.len < 2) {
         std.debug.print(usage, .{});
@@ -242,9 +242,7 @@ pub fn main() !void {
     var opts: RmOptions = .default;
 
     // Main loop
-    for (1..args.len) |i| {
-        const name = args[i];
-
+    for (args[1..]) |name| {
         if (opts.parse(name) catch {
             log.err("Unknown flag '{s}'", .{name});
             std.process.exit(1);
@@ -255,7 +253,7 @@ pub fn main() !void {
         opts.verify();
 
         // Gather file type. For missing files panic if force was not provided
-        const stat = fs.cwd().statFile(name) catch |err| switch (err) {
+        const stat = Dir.cwd().statFile(io, name, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 if (!opts.force) {
                     log.err("File '{s}' does not exist.", .{name});
@@ -266,20 +264,24 @@ pub fn main() !void {
             else => return err,
         };
 
-        if (stat.kind == .directory) {
-            // if the user says yes, unmark interactive flag
-            // so recursive deletion will no trigger the prompt again
-            if (opts.interactive and try askConfirmation(name)) {
-                opts.interactive = false;
-                try deleteDirOptions(name, opts);
-                opts.interactive = true;
-            }
-            // not interactive, delete it right away
-            else if (!opts.interactive) {
-                try deleteDirOptions(name, opts);
-            }
-        } else if (stat.kind == .file) {
-            try deleteFileOptions(name, opts);
+        switch (stat.kind) {
+            .directory => {
+                // if the user says yes, unmark interactive flag
+                // so recursive deletion will no trigger the prompt again
+                if (opts.interactive and try askConfirmation(io, name)) {
+                    opts.interactive = false;
+                    try deleteDirOptions(io, name, opts);
+                    opts.interactive = true;
+                }
+                // not interactive, delete it right away
+                else if (!opts.interactive) {
+                    try deleteDirOptions(io, name, opts);
+                }
+            },
+            .file => {
+                try deleteFileOptions(io, name, opts);
+            },
+            else => |t| std.log.warn("Unhandled file '{s}' of kind '{t}'", .{ name, t }),
         }
     }
 }
