@@ -143,11 +143,34 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: sys.user_regs_struct) !void {
+pub fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: sys.user_regs_struct) !void {
     try out.print("{s}(", .{syscall.name});
     for (syscall.regs, 0..) |reg_name, i| {
         const reg_val: u64 = getRegisterValue(reg_name, registers);
-        try out.print("{d}", .{reg_val});
+
+        if ((std.mem.eql(u8, syscall.name, "open") and std.mem.eql(u8, reg_name, "rsi")) or
+            std.mem.eql(u8, syscall.name, "openat") and std.mem.eql(u8, reg_name, "rdx"))
+        {
+            const open_flags = @as(linux.O, @bitCast(@as(u32, @intCast(reg_val))));
+            inline for (std.meta.fields(linux.O)) |field| {
+                switch (field.type) {
+                    bool => {
+                        if (@field(open_flags, field.name)) {
+                            try out.print("{s}|", .{field.name});
+                        }
+                    },
+                    std.posix.ACCMODE => {
+                        const acc = @field(open_flags, field.name);
+                        try out.print("{t}|", .{acc});
+                    },
+                    else => {},
+                }
+            }
+            // hack: backspace to remove the last '|' delimiter
+            try out.writeByte('\x08');
+        } else {
+            try out.print("{d}", .{reg_val});
+        }
         if (i != syscall.regs.len - 1) {
             try out.writeAll(", ");
         }
@@ -156,11 +179,13 @@ fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: sys.user_r
 }
 
 fn getRegisterValue(reg_name: []const u8, registers: sys.user_regs_struct) u64 {
-    const val: u64 = blk: inline for (comptime std.meta.fieldNames(sys.user_regs_struct)) |name| {
+    const val: u64 = inline for (comptime std.meta.fieldNames(sys.user_regs_struct)) |name| {
         if (std.mem.eql(u8, reg_name, name)) {
-            break :blk @intCast(@field(registers, name));
+            break @intCast(@field(registers, name));
         }
     } else std.process.fatal("Could not find field {s}", .{reg_name});
 
     return val;
 }
+
+fn printOpen() !void {}
