@@ -4,6 +4,14 @@ const linux = std.os.linux;
 
 const user = @cImport(@cInclude("sys/user.h"));
 const log = std.log.scoped(.strace);
+const sys_meta: []const u8 = @embedFile("syscalls.json");
+
+const SyscallInfo = struct {
+    name: []const u8,
+    number: u32,
+    arguments: []const []const u8,
+    regs: []const []const u8,
+};
 
 const StraceOptions = struct {
     /// program name
@@ -86,9 +94,28 @@ pub fn main(init: std.process.Init) !void {
             std.process.fatal("Could not trace syscalls: {t}", .{std.c.errno(r)});
         }
 
+        var stdout_buf: [4096]u8 = undefined;
+        var stdout_wr = std.Io.File.stdout().writer(init.io, &stdout_buf);
+        const stdout = &stdout_wr.interface;
+
+        var json_data = try std.json.parseFromSlice([]SyscallInfo, gpa, sys_meta, .{});
+        defer json_data.deinit();
+
+        var data: std.AutoHashMapUnmanaged(u32, SyscallInfo) = .empty;
+        defer data.deinit(gpa);
+        for (json_data.value) |value| {
+            try data.put(gpa, value.number, .{
+                .name = value.name,
+                .number = value.number,
+                .arguments = value.arguments,
+                .regs = value.regs,
+            });
+        }
+
         var status: c_int = 0;
         var enter = false;
-        while (std.c.waitpid(child, &status, 0) != -1) {
+
+        while (std.c.waitpid(child, &status, 0) != -1) : (enter = !enter) {
             // the child was stopped by a signal
             if (std.c.W.IFSTOPPED(@intCast(status))) {
                 var regs = std.mem.zeroes(user.user_regs_struct);
@@ -96,27 +123,44 @@ pub fn main(init: std.process.Init) !void {
                     log.err("strace getregs failed", .{});
                 }
 
-                const syscall = std.enums.fromInt(linux.syscalls.X64, regs.orig_rax) orelse {
-                    std.process.fatal("Unkown syscall number: {d}", .{regs.orig_rax});
-                };
-
+                // Only process the syscall at exit for now
                 if (!enter) {
-                    std.debug.print("{t}({d}, {d}, {d}, ...) = {d}\n", .{
-                        syscall,
-                        regs.rdi,
-                        regs.rsi,
-                        regs.rdx,
-                        regs.rax,
-                    });
+                    const syscall = std.enums.fromInt(linux.syscalls.X64, regs.orig_rax) orelse {
+                        std.process.fatal("Unkown syscall number: {d}", .{regs.orig_rax});
+                    };
+                    const s: SyscallInfo = data.get(@intCast(@intFromEnum(syscall))).?;
+                    try printSyscall(stdout, s, regs);
                 }
 
                 if (linux.ptrace(linux.PTRACE.SYSCALL, child, 0, 0, 0) == -1) {
                     log.err("strace syscall failed", .{});
                 }
-                enter = !enter;
             }
         }
+        try stdout.flush();
     } else {
         log.err("Could not fork", .{});
     }
+}
+
+fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: user.user_regs_struct) !void {
+    try out.print("{s}(", .{syscall.name});
+    for (syscall.regs, 0..) |reg_name, i| {
+        const reg_val: u64 = getRegisterValue(reg_name, registers);
+        try out.print("{d}", .{reg_val});
+        if (i != syscall.regs.len - 1) {
+            try out.writeAll(", ");
+        }
+    }
+    try out.print(") = {d}\n", .{registers.rax});
+}
+
+fn getRegisterValue(reg_name: []const u8, registers: user.user_regs_struct) u64 {
+    const val: u64 = blk: inline for (comptime std.meta.fieldNames(user.user_regs_struct)) |name| {
+        if (std.mem.eql(u8, reg_name, name)) {
+            break :blk @intCast(@field(registers, name));
+        }
+    } else std.process.fatal("Could not find field {s}", .{reg_name});
+
+    return val;
 }
