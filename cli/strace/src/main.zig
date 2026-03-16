@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const linux = std.os.linux;
 
-const user = @cImport(@cInclude("sys/user.h"));
+const sys = @cImport(@cInclude("sys/user.h"));
 const log = std.log.scoped(.strace);
 const sys_meta: []const u8 = @embedFile("syscalls.json");
 
@@ -118,7 +118,7 @@ pub fn main(init: std.process.Init) !void {
         while (std.c.waitpid(child, &status, 0) != -1) : (enter = !enter) {
             // the child was stopped by a signal
             if (std.c.W.IFSTOPPED(@intCast(status))) {
-                var regs = std.mem.zeroes(user.user_regs_struct);
+                var regs = std.mem.zeroes(sys.user_regs_struct);
                 if (linux.ptrace(linux.PTRACE.GETREGS, child, 0, @intFromPtr(&regs), 0) == -1) {
                     log.err("strace getregs failed", .{});
                 }
@@ -143,7 +143,7 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: user.user_regs_struct) !void {
+fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: sys.user_regs_struct) !void {
     try out.print("{s}(", .{syscall.name});
     for (syscall.regs, 0..) |reg_name, i| {
         const reg_val: u64 = getRegisterValue(reg_name, registers);
@@ -155,8 +155,8 @@ fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: user.user_
     try out.print(") = {d}\n", .{registers.rax});
 }
 
-fn getRegisterValue(reg_name: []const u8, registers: user.user_regs_struct) u64 {
-    const val: u64 = blk: inline for (comptime std.meta.fieldNames(user.user_regs_struct)) |name| {
+fn getRegisterValue(reg_name: []const u8, registers: sys.user_regs_struct) u64 {
+    const val: u64 = blk: inline for (comptime std.meta.fieldNames(sys.user_regs_struct)) |name| {
         if (std.mem.eql(u8, reg_name, name)) {
             break :blk @intCast(@field(registers, name));
         }
