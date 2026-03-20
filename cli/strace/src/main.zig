@@ -20,6 +20,8 @@ const StraceOptions = struct {
     args: []const []const u8,
     /// only print a summary
     summary: bool,
+    /// pid of tracee
+    pid: ?linux.pid_t = null,
 
     const usage = "Usage: strace [ -h | --help | -c | --summary-only ] <prog> [args...]";
 
@@ -89,6 +91,8 @@ pub fn main(init: std.process.Init) !void {
             else => |err| std.process.fatal("Could not spawn child: {t}", .{err}),
         }
     } else if (child > 0) { // parent
+        t.pid = child;
+
         const r = linux.ptrace(linux.PTRACE.SYSCALL, child, 0, 0, 0);
         if (r == -1) {
             std.process.fatal("Could not trace syscalls: {t}", .{std.c.errno(r)});
@@ -146,46 +150,49 @@ pub fn main(init: std.process.Init) !void {
 pub fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: sys.user_regs_struct) !void {
     try out.print("{s}(", .{syscall.name});
     for (syscall.regs, 0..) |reg_name, i| {
-        const reg_val: u64 = getRegisterValue(reg_name, registers);
+        const reg_val: i64 = getRegisterValue(reg_name, registers);
 
-        if ((std.mem.eql(u8, syscall.name, "open") and std.mem.eql(u8, reg_name, "rsi")) or
-            std.mem.eql(u8, syscall.name, "openat") and std.mem.eql(u8, reg_name, "rdx"))
+        if ((std.mem.eql(u8, syscall.name, "open") and i == 1) or
+            std.mem.eql(u8, syscall.name, "openat") and i == 2)
         {
-            const open_flags = @as(linux.O, @bitCast(@as(u32, @intCast(reg_val))));
-            inline for (std.meta.fields(linux.O)) |field| {
-                switch (field.type) {
-                    bool => {
-                        if (@field(open_flags, field.name)) {
-                            try out.print("{s}|", .{field.name});
-                        }
-                    },
-                    std.posix.ACCMODE => {
-                        const acc = @field(open_flags, field.name);
-                        try out.print("{t}|", .{acc});
-                    },
-                    else => {},
-                }
-            }
-            // hack: backspace to remove the last '|' delimiter
-            try out.writeByte('\x08');
+            const flags: u32 = @intCast(reg_val & 0xffffffff);
+            try printOpenFlags(out, flags);
         } else {
-            try out.print("{d}", .{reg_val});
+            try out.print("0x{x}", .{reg_val});
         }
         if (i != syscall.regs.len - 1) {
             try out.writeAll(", ");
         }
     }
-    try out.print(") = {d}\n", .{registers.rax});
+    try out.print(") = 0x{x}\n", .{registers.rax});
 }
 
-fn getRegisterValue(reg_name: []const u8, registers: sys.user_regs_struct) u64 {
-    const val: u64 = inline for (comptime std.meta.fieldNames(sys.user_regs_struct)) |name| {
+fn getRegisterValue(reg_name: []const u8, registers: sys.user_regs_struct) i64 {
+    const val: i64 = inline for (comptime std.meta.fieldNames(sys.user_regs_struct)) |name| {
         if (std.mem.eql(u8, reg_name, name)) {
-            break @intCast(@field(registers, name));
+            break @bitCast(@field(registers, name));
         }
     } else std.process.fatal("Could not find field {s}", .{reg_name});
 
     return val;
 }
 
-fn printOpen() !void {}
+fn printOpenFlags(out: *std.Io.Writer, open_flags: u32) !void {
+    const flags = @as(linux.O, @bitCast(open_flags));
+    inline for (std.meta.fields(linux.O)) |field| {
+        switch (field.type) {
+            bool => {
+                if (@field(flags, field.name)) {
+                    try out.print("O_{s}|", .{field.name});
+                }
+            },
+            std.posix.ACCMODE => {
+                const acc = @field(flags, field.name);
+                try out.print("O_{t}|", .{acc});
+            },
+            else => {}, // ignore padding fields
+        }
+    }
+    // hack: backspace to remove the last '|' delimiter
+    try out.writeByte('\x08');
+}
