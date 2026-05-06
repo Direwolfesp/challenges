@@ -21,13 +21,10 @@ fn addFileWatch(notify: i32, path: [*:0]const u8) !i32 {
         watch_fd;
 }
 
-pub fn main() !void {
-    var alloc: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer alloc.deinit();
-    const arena = alloc.allocator();
-
-    const args = try std.process.argsAlloc(arena);
-    defer std.process.argsFree(arena, args);
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(arena);
+    const io = init.io;
 
     const ino_fd: i32 = @intCast(linux.inotify_init1(linux.IN.NONBLOCK));
     if (ino_fd == -1) {
@@ -45,9 +42,8 @@ pub fn main() !void {
 
     // default to cwd if no params
     if (args.len <= 1) {
-        const cwd = try std.process.getCwdAlloc(arena);
-        const nulled = try arena.dupeZ(u8, cwd); // leak
-        const watch_fd: i32 = try addFileWatch(ino_fd, nulled);
+        const cwd = try std.process.currentPathAlloc(io, arena);
+        const watch_fd: i32 = try addFileWatch(ino_fd, cwd);
         try watched_files.append(arena, .{
             .path = cwd,
             .wd = watch_fd,
@@ -79,12 +75,13 @@ pub fn main() !void {
     // trick to wrap the raw fd into a file like
     // structure so i can reuse its std.Io.Reader
     // vtable.
-    var ino_file = std.fs.File{
+    var ino_file = std.Io.File{
         .handle = ino_fd,
+        .flags = .{ .nonblocking = true },
     };
 
     var inotify_buf: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
-    var reader = ino_file.reader(&inotify_buf);
+    var reader = ino_file.reader(io, &inotify_buf);
     const ino_reader = &reader.interface;
 
     while (true) {
