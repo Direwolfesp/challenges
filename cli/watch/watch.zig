@@ -10,6 +10,7 @@ const WatchedFile = struct {
 const EVENTS =
     linux.IN.DELETE |
     linux.IN.MODIFY |
+    linux.IN.MOVE |
     linux.IN.CREATE;
 
 /// Helper to add files to a inotify descriptor
@@ -111,18 +112,26 @@ fn consumeEvents(
 
         if (event.mask & linux.IN.DELETE != 0) {
             std.debug.print("deleted ", .{});
-        }
-        if (event.mask & linux.IN.MODIFY != 0) {
+        } else if (event.mask & linux.IN.MODIFY != 0) {
             std.debug.print("written ", .{});
-        }
-        if (event.mask & linux.IN.CREATE != 0) {
+        } else if (event.mask & linux.IN.CREATE != 0) {
             std.debug.print("created ", .{});
+        } else if (event.mask & linux.IN.MOVED_FROM != 0) {
+            std.debug.print("moved ", .{});
+        } else if (event.mask & linux.IN.MOVED_TO != 0) {
+            std.debug.print("to ", .{});
         }
 
         // read name if present, advancing the seek position
         if (event.len > 0) {
             const name = try inotify_reader.take(event.len);
             std.debug.print("'{s}' ", .{name});
+        }
+
+        // Skip curent MOVED_FROM iteration so we can print the
+        // MOVED_TO afterwards without polluting the output
+        if (event.mask & linux.IN.MOVED_FROM != 0) {
+            continue;
         }
 
         for (files.items) |file| {
@@ -137,7 +146,6 @@ fn consumeEvents(
         } else {
             std.debug.print("[file]", .{});
         }
-
         std.debug.print("\n", .{});
     } else |err| switch (err) {
         error.EndOfStream => {},
