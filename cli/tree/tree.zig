@@ -21,13 +21,7 @@ pub const TreeWalker = struct {
         try self.out.print("{d} directories, {d} files\n", .{ self.num_directories, self.num_files });
     }
 
-    fn walkInner(self: *Self, io: Io, alloc: Allocator, directory: []const u8, prefix: []const u8) !void {
-        var dir = Io.Dir.cwd().openDir(io, directory, .{ .iterate = true }) catch |err| {
-            std.log.err("Could not open {s}: {t}", .{ directory, err });
-            return;
-        };
-        defer dir.close(io);
-
+    fn walkInner(self: *Self, io: Io, alloc: Allocator, dir: Io.Dir, prefix: []const u8) !void {
         var paths: std.ArrayList(Io.Dir.Entry) = .empty;
         defer {
             for (paths.items) |entry| alloc.free(entry.name);
@@ -61,9 +55,9 @@ pub const TreeWalker = struct {
                 self.num_directories += 1;
                 const new_prefix = try std.fmt.allocPrint(alloc, "{s}{s}", .{ prefix, symbols[1] });
                 defer alloc.free(new_prefix);
-                const new_path = try Io.Dir.path.join(alloc, &[_][]const u8{ directory, entry.name });
-                defer alloc.free(new_path);
-                try self.walkInner(io, alloc, new_path, new_prefix);
+                const new_dir = try dir.openDir(io, entry.name, .{ .iterate = true });
+                defer new_dir.close(io);
+                try self.walkInner(io, alloc, new_dir, new_prefix);
             } else {
                 self.num_files += 1;
             }
@@ -72,7 +66,9 @@ pub const TreeWalker = struct {
 
     pub fn walk(self: *Self, io: Io, alloc: Allocator, directory: []const u8) !void {
         try self.out.print("{s}\n", .{directory});
-        try self.walkInner(io, alloc, directory, "");
+        const root = try Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
+        defer root.close(io);
+        try self.walkInner(io, alloc, root, "");
         try self.out.writeByte('\n');
     }
 };
