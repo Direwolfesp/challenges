@@ -7,6 +7,16 @@ pub const Operators = enum {
     multiply,
     divide,
     modulus,
+
+    pub fn precedence(self: Operators) u32 {
+        return switch (self) {
+            .add => 2,
+            .subtract => 2,
+            .multiply => 3,
+            .divide => 3,
+            .modulus => 3,
+        };
+    }
 };
 
 pub const Tokens = union(enum) {
