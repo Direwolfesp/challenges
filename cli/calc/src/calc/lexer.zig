@@ -8,6 +8,16 @@ pub const Operators = enum {
     divide,
     modulus,
 
+    pub fn operate(self: Operators, left: i64, right: i64) !i64 {
+        return switch (self) {
+            .add => left + right,
+            .subtract => left - right,
+            .multiply => left * right,
+            .divide => try std.math.divFloor(i64, left, right),
+            .modulus => try std.math.mod(i64, left, right),
+        };
+    }
+
     pub fn precedence(self: Operators) u32 {
         return switch (self) {
             .add => 2,
@@ -28,7 +38,7 @@ pub const Tokens = union(enum) {
 
 const LexerError = Allocator.Error || std.fmt.ParseIntError || error{UnknownToken};
 
-fn tokenize(gpa: Allocator, input: []const u8, tokens: *std.ArrayList(Tokens)) LexerError!void {
+pub fn tokenize(gpa: Allocator, input: []const u8, tokens: *std.ArrayList(Tokens)) LexerError!void {
     var last_num: ?i64 = null;
 
     for (input, 0..) |c, i| {

@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const Tokens = @import("lexer.zig").Tokens;
 
-fn intoReverseNotation(gpa: Allocator, tokens: []const Tokens) Allocator.Error![]Tokens {
+pub fn intoReverseNotation(gpa: Allocator, tokens: []const Tokens) Allocator.Error![]Tokens {
     // Implements https://en.wikipedia.org/wiki/Shunting_yard_algorithm
     var output_queue: std.ArrayList(Tokens) = try .initCapacity(gpa, tokens.len);
     defer output_queue.deinit(gpa);
