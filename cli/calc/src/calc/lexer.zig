@@ -1,5 +1,11 @@
 const std = @import("std");
+const math = std.math;
 const Allocator = std.mem.Allocator;
+
+pub const LexerError = Allocator.Error || std.fmt.ParseIntError || error{
+    UnknownToken,
+    ShutdownRequest,
+};
 
 pub const Operators = enum {
     add,
@@ -13,8 +19,8 @@ pub const Operators = enum {
             .add => left + right,
             .subtract => left - right,
             .multiply => left * right,
-            .divide => try std.math.divFloor(i64, left, right),
-            .modulus => try std.math.mod(i64, left, right),
+            .divide => try math.divFloor(i64, left, right),
+            .modulus => try math.mod(i64, left, right),
         };
     }
 
@@ -36,10 +42,12 @@ pub const Tokens = union(enum) {
     closing_bracket: void,
 };
 
-const LexerError = Allocator.Error || std.fmt.ParseIntError || error{UnknownToken};
-
 pub fn tokenize(gpa: Allocator, input: []const u8, tokens: *std.ArrayList(Tokens)) LexerError!void {
     var last_num: ?i64 = null;
+
+    if (input.len >= 4 and std.mem.eql(u8, "quit", input[0..4])) {
+        return error.ShutdownRequest;
+    }
 
     for (input, 0..) |c, i| {
         try switch (c) {
@@ -69,9 +77,8 @@ pub fn tokenize(gpa: Allocator, input: []const u8, tokens: *std.ArrayList(Tokens
             '0'...'9' => |digit| {
                 const n = try std.fmt.parseInt(i64, &[_]u8{digit}, 10);
                 if (last_num) |*num| {
-                    num.* *= 10;
-                    num.* += n;
-                    last_num = num.*;
+                    num.* = try math.mul(i64, num.*, 10);
+                    num.* = try math.add(i64, num.*, n);
                 } else {
                     last_num = n;
                 }

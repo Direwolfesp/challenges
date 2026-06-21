@@ -3,13 +3,13 @@ const Allocator = std.mem.Allocator;
 
 const Tokens = @import("lexer.zig").Tokens;
 
-pub const ParseError = error{
+pub const ParserError = error{
     IncompleteExpr,
     MissingOpeningParent,
     MissingClosingParent,
 } || Allocator.Error;
 
-pub fn intoReverseNotation(gpa: Allocator, tokens: []const Tokens) ParseError![]Tokens {
+pub fn intoReverseNotation(gpa: Allocator, tokens: []const Tokens) ParserError![]Tokens {
     // Implements https://en.wikipedia.org/wiki/Shunting_yard_algorithm
     var output_queue: std.ArrayList(Tokens) = try .initCapacity(gpa, tokens.len);
     defer output_queue.deinit(gpa);

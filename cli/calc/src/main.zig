@@ -1,8 +1,11 @@
 const std = @import("std");
+const print = std.debug.print;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const calc = @import("calc");
+
+const promp = "> ";
 
 const help =
     \\ Usage: {s} [expression] 
@@ -13,7 +16,6 @@ const help =
     \\ Flags:
     \\ -h/--help: Show this help
 ;
-const promp = "> ";
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -25,16 +27,19 @@ pub fn main(init: std.process.Init) !void {
         var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
         const stdin = &stdin_reader.interface;
 
-        std.debug.print("{s}", .{promp});
-        while (try stdin.takeDelimiter('\n')) |line| : (std.debug.print("{s}", .{promp})) {
-            const result = calc.evalExpr(gpa, line) catch |err| {
-                std.log.err("{t}", .{err});
-                continue;
+        print("{s}", .{promp});
+        while (try stdin.takeDelimiter('\n')) |line| : (print("{s}", .{promp})) {
+            const result = calc.evalExpr(gpa, line) catch |err| switch (err) {
+                error.ShutdownRequest => break,
+                else => {
+                    std.log.err("{t}", .{err});
+                    continue;
+                },
             };
-            std.debug.print("{d}\n", .{result});
+            print("{d}\n", .{result});
         }
     } else if (std.mem.eql(u8, "-h", args[1]) or std.mem.eql(u8, "--help", args[1])) {
-        std.debug.print(help, .{args[0]});
+        print(help, .{args[0]});
     } else {
         const expr = args[1];
         const result = try calc.evalExpr(gpa, expr);

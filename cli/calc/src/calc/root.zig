@@ -7,7 +7,12 @@ const lexer = @import("lexer.zig");
 const Tokens = lexer.Tokens;
 const parser = @import("parser.zig");
 
-pub fn evalExpr(gpa: Allocator, source: []const u8) !i64 {
+pub const CalcError = parser.ParserError || lexer.LexerError || error{
+    DivisionByZero,
+    NegativeDenominator,
+};
+
+pub fn evalExpr(gpa: Allocator, source: []const u8) CalcError!i64 {
     var tokens: std.ArrayList(Tokens) = .empty;
     defer tokens.deinit(gpa);
     try lexer.tokenize(gpa, source, &tokens);
@@ -62,10 +67,12 @@ test "evaluate simple expressions" {
 
 test "evaluate more complex expressions" {
     const gpa = std.testing.allocator;
-    {
-        const res = try evalExpr(gpa, "34 * (94 + 12 / (2 - 1))");
-        try std.testing.expectEqual(3604, res);
-    }
+    const res = try evalExpr(gpa, "34 * (94 + 12 / (2 - 1))");
+    try std.testing.expectEqual(3604, res);
+}
+
+test "illegal expresions" {
+    const gpa = std.testing.allocator;
     {
         const res = evalExpr(gpa, "( (3) / 0)");
         try std.testing.expectError(error.DivisionByZero, res);
@@ -73,6 +80,14 @@ test "evaluate more complex expressions" {
     {
         const res = evalExpr(gpa, "( (3) % 0)");
         try std.testing.expectError(error.DivisionByZero, res);
+    }
+    {
+        const res = evalExpr(gpa, "( (3) % 0 ");
+        try std.testing.expectError(error.MissingClosingParent, res);
+    }
+    {
+        const res = evalExpr(gpa, "  (3) % 0)");
+        try std.testing.expectError(error.MissingOpeningParent, res);
     }
 }
 
