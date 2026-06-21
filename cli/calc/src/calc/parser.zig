@@ -3,7 +3,13 @@ const Allocator = std.mem.Allocator;
 
 const Tokens = @import("lexer.zig").Tokens;
 
-pub fn intoReverseNotation(gpa: Allocator, tokens: []const Tokens) Allocator.Error![]Tokens {
+pub const ParseError = error{
+    IncompleteExpr,
+    MissingOpeningParent,
+    MissingClosingParent,
+} || Allocator.Error;
+
+pub fn intoReverseNotation(gpa: Allocator, tokens: []const Tokens) ParseError![]Tokens {
     // Implements https://en.wikipedia.org/wiki/Shunting_yard_algorithm
     var output_queue: std.ArrayList(Tokens) = try .initCapacity(gpa, tokens.len);
     defer output_queue.deinit(gpa);
@@ -15,9 +21,10 @@ pub fn intoReverseNotation(gpa: Allocator, tokens: []const Tokens) Allocator.Err
         switch (tok) {
             .operator => |op| {
                 while (operator_stack.getLastOrNull()) |last| {
-                    if (last == .opening_bracket) break;
-                    if (last.operator.precedence() < op.precedence()) break;
-                    try output_queue.append(gpa, operator_stack.pop().?);
+                    if (last == .opening_bracket or
+                        last.operator.precedence() < op.precedence())
+                        break;
+                    try output_queue.append(gpa, operator_stack.pop() orelse return error.IncompleteExpr);
                 }
                 try operator_stack.append(gpa, tok);
             },
@@ -26,7 +33,8 @@ pub fn intoReverseNotation(gpa: Allocator, tokens: []const Tokens) Allocator.Err
                     if (last == .opening_bracket) break;
                     try output_queue.append(gpa, operator_stack.pop().?);
                 }
-                std.debug.assert(operator_stack.pop().? == .opening_bracket);
+                const pop = operator_stack.pop() orelse return error.MissingOpeningParent;
+                if (pop != .opening_bracket) return error.MissingOpeningParent;
             },
             .opening_bracket => try operator_stack.append(gpa, tok),
             .operand => try output_queue.append(gpa, tok),
@@ -34,7 +42,8 @@ pub fn intoReverseNotation(gpa: Allocator, tokens: []const Tokens) Allocator.Err
     }
 
     while (operator_stack.pop()) |op| {
-        std.debug.assert(op != .opening_bracket);
+        if (op == .opening_bracket)
+            return error.MissingClosingParent;
         try output_queue.append(gpa, op);
     }
 
