@@ -41,7 +41,7 @@ pub fn evalExpr(gpa: Allocator, source: []const u8) CalcError!i64 {
         else => unreachable, // reverse notation lacks other symbols (brackets)
     };
 
-    return stack.pop().?; // the result is accumulated as the last elem
+    return stack.pop() orelse error.EmptyExpression; // ()
 }
 
 test "evaluate simple expressions" {
@@ -98,6 +98,10 @@ test "illegal expresions" {
     }
     {
         const res = evalExpr(gpa, "          ");
+        try std.testing.expectError(error.EmptyExpression, res);
+    }
+    {
+        const res = evalExpr(gpa, "()");
         try std.testing.expectError(error.EmptyExpression, res);
     }
 }
