@@ -27,9 +27,15 @@ pub fn main(init: std.process.Init) !void {
         var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
         const stdin = &stdin_reader.interface;
 
-        print("{s}", .{promp});
+        print(
+            \\Welcome to the interactive calculator!
+            \\Enter 'quit' to exit.
+            \\{s}
+        , .{promp});
+
         while (try stdin.takeDelimiter('\n')) |line| : (print("{s}", .{promp})) {
             const result = calc.evalExpr(gpa, line) catch |err| switch (err) {
+                error.EmptyExpression => continue,
                 error.ShutdownRequest => break,
                 else => {
                     std.log.err("{t}", .{err});

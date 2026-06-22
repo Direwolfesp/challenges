@@ -10,12 +10,19 @@ const parser = @import("parser.zig");
 pub const CalcError = parser.ParserError || lexer.LexerError || error{
     DivisionByZero,
     NegativeDenominator,
+    EmptyExpression,
 };
 
 pub fn evalExpr(gpa: Allocator, source: []const u8) CalcError!i64 {
     var tokens: std.ArrayList(Tokens) = .empty;
     defer tokens.deinit(gpa);
+
     try lexer.tokenize(gpa, source, &tokens);
+
+    // all spaces
+    if (tokens.items.len == 0) {
+        return error.EmptyExpression;
+    }
 
     const reversed = try parser.intoReverseNotation(gpa, tokens.items);
     defer gpa.free(reversed);
@@ -88,6 +95,10 @@ test "illegal expresions" {
     {
         const res = evalExpr(gpa, "  (3) % 0)");
         try std.testing.expectError(error.MissingOpeningParent, res);
+    }
+    {
+        const res = evalExpr(gpa, "          ");
+        try std.testing.expectError(error.EmptyExpression, res);
     }
 }
 
