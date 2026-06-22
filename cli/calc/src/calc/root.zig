@@ -10,6 +10,7 @@ const parser = @import("parser.zig");
 pub const CalcError = parser.ParserError || lexer.LexerError || error{
     DivisionByZero,
     NegativeDenominator,
+    /// Expression that not return a value such as: " ", "(())", ...
     EmptyExpression,
 };
 

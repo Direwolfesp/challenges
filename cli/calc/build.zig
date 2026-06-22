@@ -4,6 +4,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const translate_c = b.addTranslateC(.{
+        .optimize = optimize,
+        .target = target,
+        .root_source_file = b.path("src/c.h"),
+    });
+    translate_c.linkSystemLibrary("readline", .{});
+
     const calc_mod = b.addModule("calc", .{
         .root_source_file = b.path("src/calc/root.zig"),
         .target = target,
@@ -17,6 +24,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "calc", .module = calc_mod },
+                .{ .name = "c", .module = translate_c.createModule() },
             },
         }),
     });

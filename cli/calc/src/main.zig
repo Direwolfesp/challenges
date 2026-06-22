@@ -4,8 +4,15 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const calc = @import("calc");
+const c = @import("c");
 
 const promp = "> ";
+
+const welcome =
+    \\Welcome to the interactive calculator!
+    \\Enter 'quit' to exit.
+    \\
+;
 
 const help =
     \\ Usage: {s} [expression] 
@@ -23,18 +30,13 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (args.len <= 1) {
-        var stdin_buf: [4096]u8 = undefined;
-        var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
-        const stdin = &stdin_reader.interface;
+        print(welcome, .{});
 
-        print(
-            \\Welcome to the interactive calculator!
-            \\Enter 'quit' to exit.
-            \\{s}
-        , .{promp});
+        while (c.readline(promp)) |line| {
+            defer c.free(line);
+            c.add_history(line);
 
-        while (try stdin.takeDelimiter('\n')) |line| : (print("{s}", .{promp})) {
-            const result = calc.evalExpr(gpa, line) catch |err| switch (err) {
+            const result = calc.evalExpr(gpa, std.mem.span(line)) catch |err| switch (err) {
                 error.EmptyExpression => continue,
                 error.ShutdownRequest => break,
                 else => {
