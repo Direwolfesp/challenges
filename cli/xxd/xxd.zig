@@ -310,14 +310,14 @@ pub fn processLineOptions(bytes: []const u8, index: u64, out: *std.Io.Writer, op
 /// Seeking before the byte 0 will result in an error.
 pub fn calcSeekPosition(io: std.Io, file: std.Io.File, seek: i64) !u64 {
     return if (seek < 0) blk: {
-        const st = try file.stat(io);
+        const length: u64 = try file.length(io);
 
         // prevent seeking backwards out of bounds
-        if (@abs(seek) > st.size) {
+        if (@abs(seek) > length) {
             log.err("Sorry, cannot seek.", .{});
             std.process.exit(1);
         }
-        const seek_pos = st.size - @abs(seek);
+        const seek_pos = length - @abs(seek);
         break :blk seek_pos;
     } else @abs(seek);
 }
@@ -352,12 +352,13 @@ pub fn main(init: std.process.Init) !void {
     var index: u64 = seek_pos;
 
     while (input.peek(opts.columns)) |bytes| : (index += opts.columns) {
+        defer input.toss(opts.columns);
+
         // we reached desired `length`
         if (opts.request_stop)
             break;
 
         // process row
-        input.toss(opts.columns);
         try processLineOptions(bytes, index, stdout, &opts);
 
         // Only flush when attached to a terminal
