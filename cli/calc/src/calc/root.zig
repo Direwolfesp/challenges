@@ -10,11 +10,9 @@ const parser = @import("parser.zig");
 pub const CalcError = parser.ParserError || lexer.LexerError || error{
     DivisionByZero,
     NegativeDenominator,
-    /// Expression that not return a value such as: " ", "(())", ...
-    EmptyExpression,
 };
 
-pub fn evalExpr(gpa: Allocator, source: []const u8) CalcError!i64 {
+pub fn evalExpr(gpa: Allocator, source: []const u8) CalcError!?i64 {
     var tokens: std.ArrayList(Tokens) = .empty;
     defer tokens.deinit(gpa);
 
@@ -22,7 +20,7 @@ pub fn evalExpr(gpa: Allocator, source: []const u8) CalcError!i64 {
 
     // all spaces
     if (tokens.items.len == 0) {
-        return error.EmptyExpression;
+        return null;
     }
 
     const reversed = try parser.intoReverseNotation(gpa, tokens.items);
@@ -42,7 +40,7 @@ pub fn evalExpr(gpa: Allocator, source: []const u8) CalcError!i64 {
         else => unreachable, // reverse notation lacks other symbols (brackets)
     };
 
-    return stack.pop() orelse error.EmptyExpression; // ()
+    return stack.pop() orelse null; // empty expression
 }
 
 test "evaluate simple expressions" {

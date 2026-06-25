@@ -37,21 +37,23 @@ pub fn main(init: std.process.Init) !void {
             c.add_history(line);
 
             const result = calc.evalExpr(gpa, std.mem.span(line)) catch |err| switch (err) {
-                error.EmptyExpression => continue,
                 error.ShutdownRequest => break,
                 else => {
                     std.log.err("{t}", .{err});
                     continue;
                 },
             };
-            print("{d}\n", .{result});
+            if (result) |value| {
+                print("{d}\n", .{value});
+            }
         }
     } else if (std.mem.eql(u8, "-h", args[1]) or std.mem.eql(u8, "--help", args[1])) {
         print(help, .{args[0]});
     } else {
-        const expr = args[1];
-        const result = try calc.evalExpr(gpa, expr);
         var stdout = Io.File.stdout().writer(io, &.{});
-        try stdout.interface.print("{d}", .{result});
+        const expr = args[1];
+        if (try calc.evalExpr(gpa, expr)) |result| {
+            try stdout.interface.print("{d}", .{result});
+        }
     }
 }
