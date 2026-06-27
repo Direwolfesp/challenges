@@ -169,17 +169,17 @@ pub fn scanPorts(io: Io, gpa: Allocator, address: []const u8, ports: PortRange) 
                 var results: Io.Queue(ScanResult) = .init(&result_buf);
                 defer results.close(io);
 
-                var consumer = try io.concurrent(consumeScanResult, .{ io, &results });
-                var prod_1 = try io.concurrent(scannerProducer, .{ io, &results, &port_ticket, address });
-                var prod_2 = try io.concurrent(scannerProducer, .{ io, &results, &port_ticket, address });
-                var prod_3 = try io.concurrent(scannerProducer, .{ io, &results, &port_ticket, address });
-                var prod_4 = try io.concurrent(scannerProducer, .{ io, &results, &port_ticket, address });
+                var group: Io.Group = .init;
+                defer group.cancel(io);
 
-                prod_1.await(io);
-                prod_2.await(io);
-                prod_3.await(io);
-                prod_4.await(io);
-                consumer.await(io);
+                try group.concurrent(io, consumeScanResult, .{ io, &results });
+
+                // TODO: how many should I spawn?
+                for (0..10) |_| {
+                    group.async(io, scannerProducer, .{ io, &results, &port_ticket, address });
+                }
+
+                try group.await(io);
             },
             .one => |port| {
                 const open = defaultScan(io, addr, port);
