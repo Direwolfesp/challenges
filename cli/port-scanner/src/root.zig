@@ -55,7 +55,6 @@ fn expandAddressWildcard(gpa: Allocator, address: []const u8) !std.ArrayList([]c
 
                 // asserts its a valid ip
                 try Io.net.HostName.validate(addr);
-
                 const owned_addr = try gpa.dupe(u8, addr);
                 errdefer gpa.free(owned_addr);
                 try addresses.append(gpa, owned_addr);
@@ -94,6 +93,10 @@ const ScanResult = struct {
     },
 };
 
+const defaultScan = vanillaScan;
+
+/// The most basic scan, complete a full TCP handshake
+/// Returns true if the port is open
 fn vanillaScan(io: Io, address: []const u8, port: u16) bool {
     const host = Io.net.HostName.init(address) catch return false;
     const s = host.connect(io, port, .{
@@ -105,21 +108,38 @@ fn vanillaScan(io: Io, address: []const u8, port: u16) bool {
     return true;
 }
 
-fn vanillaScanJob(io: Io, results: *Io.Queue(ScanResult), address: []const u8, port: u16) void {
-    const open = vanillaScan(io, address, port);
-    results.putOne(io, .{
-        .port = port,
-        .status = if (open) .open else .closed,
-    }) catch |err| {
-        std.log.err("{t}", .{err});
-        switch (err) {
+/// Worker function that updates a global counter and
+/// performs the scan at that port, appending the
+/// result to `results.`
+fn scannerProducer(
+    io: Io,
+    results: *Io.Queue(ScanResult),
+    port_counter: *std.atomic.Value(u16),
+    address: []const u8,
+) void {
+    while (true) {
+        const port = port_counter.fetchAdd(1, .monotonic);
+        const open = vanillaScan(io, address, port);
+
+        results.putOne(io, .{
+            .port = port,
+            .status = if (open) .open else .closed,
+        }) catch |err| switch (err) {
             error.Canceled => return,
             error.Closed => return,
+        };
+
+        // we are scanning the last port
+        // close the queue so the comsumer does
+        // not halt forever.
+        if (port == MAX_PORT) {
+            results.close(io);
+            break;
         }
-    };
+    }
 }
 
-pub fn consumeResults(io: Io, results: *Io.Queue(ScanResult)) void {
+pub fn consumeScanResult(io: Io, results: *Io.Queue(ScanResult)) void {
     while (true) {
         const result = results.getOne(io) catch |err| switch (err) {
             error.Closed => break,
@@ -144,23 +164,25 @@ pub fn scanPorts(io: Io, gpa: Allocator, address: []const u8, ports: PortRange) 
         std.debug.print("Scanning host: {s}\n", .{addr});
         switch (ports) {
             .all => {
-                var group: Io.Group = .init;
-                defer group.cancel(io);
-
+                var port_ticket: std.atomic.Value(u16) = .init(1);
                 var result_buf: [512]ScanResult = undefined;
                 var results: Io.Queue(ScanResult) = .init(&result_buf);
                 defer results.close(io);
 
-                var future = try io.concurrent(consumeResults, .{ io, &results });
+                var consumer = try io.concurrent(consumeScanResult, .{ io, &results });
+                var prod_1 = try io.concurrent(scannerProducer, .{ io, &results, &port_ticket, address });
+                var prod_2 = try io.concurrent(scannerProducer, .{ io, &results, &port_ticket, address });
+                var prod_3 = try io.concurrent(scannerProducer, .{ io, &results, &port_ticket, address });
+                var prod_4 = try io.concurrent(scannerProducer, .{ io, &results, &port_ticket, address });
 
-                for (1..MAX_PORT + 1) |port| {
-                    try group.concurrent(io, vanillaScanJob, .{ io, &results, address, @intCast(port) });
-                }
-
-                future.await(io);
+                prod_1.await(io);
+                prod_2.await(io);
+                prod_3.await(io);
+                prod_4.await(io);
+                consumer.await(io);
             },
             .one => |port| {
-                const open = vanillaScan(io, addr, port);
+                const open = defaultScan(io, addr, port);
                 if (open) {
                     std.debug.print("Port: {d} is open\n", .{port});
                 }
