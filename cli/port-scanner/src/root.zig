@@ -167,6 +167,7 @@ fn scannerProducer(
     results: *Io.Queue(ScanResult),
     port_counter: *std.atomic.Value(u16),
     address: []const u8,
+    max_port: u16,
 ) void {
     while (true) {
         const port = port_counter.fetchAdd(1, .monotonic);
@@ -183,7 +184,7 @@ fn scannerProducer(
         // we are scanning the last port
         // close the queue so the comsumer does
         // not halt forever.
-        if (port == PORT_MAX) {
+        if (port == max_port) {
             results.close(io);
             break;
         }
@@ -204,6 +205,27 @@ pub fn consumeScanResult(io: Io, results: *Io.Queue(ScanResult)) void {
     }
 }
 
+/// Scans an address in a given range of ports.
+/// Its responsible for spawning all the tasks for concurrency.
+fn rangedScan(io: Io, address: []const u8, start: u16, end: u16) !void {
+    var port_ticket: std.atomic.Value(u16) = .init(start);
+    var result_buf: [512]ScanResult = undefined;
+    var results: Io.Queue(ScanResult) = .init(&result_buf);
+    defer results.close(io);
+
+    var group: Io.Group = .init;
+    defer group.cancel(io);
+
+    try group.concurrent(io, consumeScanResult, .{ io, &results });
+
+    // TODO: how many should I spawn?
+    for (0..10) |_| {
+        group.async(io, scannerProducer, .{ io, &results, &port_ticket, address, end });
+    }
+
+    try group.await(io);
+}
+
 /// Highest level function of the module
 pub fn scanPorts(io: Io, gpa: Allocator, address: []const u8, ports: PortRange) !void {
     var addresses = try resolveAddress(io, gpa, address);
@@ -216,22 +238,10 @@ pub fn scanPorts(io: Io, gpa: Allocator, address: []const u8, ports: PortRange) 
         std.debug.print("Scanning host: {s}\n", .{addr});
         switch (ports) {
             .all => {
-                var port_ticket: std.atomic.Value(u16) = .init(1);
-                var result_buf: [512]ScanResult = undefined;
-                var results: Io.Queue(ScanResult) = .init(&result_buf);
-                defer results.close(io);
-
-                var group: Io.Group = .init;
-                defer group.cancel(io);
-
-                try group.concurrent(io, consumeScanResult, .{ io, &results });
-
-                // TODO: how many should I spawn?
-                for (0..10) |_| {
-                    group.async(io, scannerProducer, .{ io, &results, &port_ticket, addr });
-                }
-
-                try group.await(io);
+                try rangedScan(io, addr, 1, PORT_MAX);
+            },
+            .range => |range| {
+                try rangedScan(io, addr, range.start, range.end);
             },
             .one => |port| {
                 const open = defaultScan(io, addr, port);
@@ -239,7 +249,6 @@ pub fn scanPorts(io: Io, gpa: Allocator, address: []const u8, ports: PortRange) 
                     std.debug.print("Port: {d: >5} is open\n", .{port});
                 }
             },
-            .range => @panic("TODO: ranged port scan"),
         }
     }
 }
