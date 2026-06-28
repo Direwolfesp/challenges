@@ -6,6 +6,8 @@ const net = Io.net;
 
 const PORT_MAX = std.math.maxInt(u16);
 
+const services = @import("services.zig");
+
 /// Performs a DNS lookup to resolve all ips for the given `hostname`
 /// appending results to `results`
 fn resolveHostname(io: Io, gpa: Allocator, hostname: []const u8, results: *std.ArrayList([]const u8)) !void {
@@ -138,6 +140,7 @@ pub const PortRange = union(enum) {
 
 const ScanResult = struct {
     port: u16,
+    protocol: net.Protocol,
     status: enum {
         open,
         closed,
@@ -148,11 +151,11 @@ const defaultScan = vanillaScan;
 
 /// The most basic scan, complete a full TCP handshake
 /// Returns true if the port is open
-fn vanillaScan(io: Io, address: []const u8, port: u16) bool {
+fn vanillaScan(io: Io, address: []const u8, port: u16, proto: net.Protocol) bool {
     const addr = net.IpAddress.parse(address, port) catch @panic("called with invalid ip");
     const s = addr.connect(io, .{
         .mode = .stream,
-        .protocol = .tcp,
+        .protocol = proto,
         .timeout = .none,
     }) catch return false;
     s.close(io);
@@ -168,14 +171,16 @@ fn scannerProducer(
     port_counter: *std.atomic.Value(u16),
     address: []const u8,
     max_port: u16,
+    proto: net.Protocol,
 ) void {
     while (true) {
         const port = port_counter.fetchAdd(1, .monotonic);
-        const open = vanillaScan(io, address, port);
+        const open = vanillaScan(io, address, port, proto);
 
         results.putOne(io, .{
             .port = port,
             .status = if (open) .open else .closed,
+            .protocol = proto,
         }) catch |err| switch (err) {
             error.Canceled => return,
             error.Closed => return,
@@ -191,7 +196,15 @@ fn scannerProducer(
     }
 }
 
-pub fn consumeScanResult(io: Io, results: *Io.Queue(ScanResult)) void {
+/// Pumps data from the queue `results` and reports diagnostics to `out`
+pub fn consumeScanResult(
+    io: Io,
+    arena: Allocator,
+    results: *Io.Queue(ScanResult),
+    out: *Io.Writer,
+) void {
+    const info = services.getServicesInfo(arena) catch return;
+
     while (true) {
         const result = results.getOne(io) catch |err| switch (err) {
             error.Closed => break,
@@ -199,15 +212,33 @@ pub fn consumeScanResult(io: Io, results: *Io.Queue(ScanResult)) void {
         };
 
         switch (result.status) {
-            .open => std.debug.print("Port: {d: >5} is open\n", .{result.port}),
+            .open => {
+                var buf: [32]u8 = undefined;
+                const key = std.fmt.bufPrint(&buf, "{d}/{t}", .{
+                    result.port,
+                    result.protocol,
+                }) catch std.fmt.bufPrint(&buf, "{d}", .{result.port}) catch unreachable; // will never overflow
+
+                out.print("Port: open {s: <10} ", .{key}) catch return;
+
+                const short, const long = if (info.get(key)) |proto|
+                    .{ proto.short_desc, proto.long_desc }
+                else
+                    .{ "Unknown", "Unknown" };
+
+                out.print("{s: <17} {s}\n", .{ short, long }) catch return;
+            },
             .closed => {},
         }
     }
+
+    // send data to sink once we are done
+    out.flush() catch return;
 }
 
 /// Scans an address in a given range of ports.
 /// Its responsible for spawning all the tasks for concurrency.
-fn rangedScan(io: Io, address: []const u8, start: u16, end: u16) !void {
+fn rangedScan(io: Io, gpa: Allocator, address: []const u8, start: u16, end: u16) !void {
     var port_ticket: std.atomic.Value(u16) = .init(start);
     var result_buf: [512]ScanResult = undefined;
     var results: Io.Queue(ScanResult) = .init(&result_buf);
@@ -216,11 +247,24 @@ fn rangedScan(io: Io, address: []const u8, start: u16, end: u16) !void {
     var group: Io.Group = .init;
     defer group.cancel(io);
 
-    try group.concurrent(io, consumeScanResult, .{ io, &results });
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    var stdout_writer = Io.File.stdout().writer(io, &.{});
+    const stdout = &stdout_writer.interface;
+
+    try group.concurrent(io, consumeScanResult, .{ io, arena.allocator(), &results, stdout });
 
     // TODO: how many should I spawn?
     for (0..10) |_| {
-        group.async(io, scannerProducer, .{ io, &results, &port_ticket, address, end });
+        group.async(io, scannerProducer, .{
+            io,
+            &results,
+            &port_ticket,
+            address,
+            end,
+            .tcp,
+        });
     }
 
     try group.await(io);
@@ -238,13 +282,13 @@ pub fn scanPorts(io: Io, gpa: Allocator, address: []const u8, ports: PortRange) 
         std.debug.print("Scanning host: {s}\n", .{addr});
         switch (ports) {
             .all => {
-                try rangedScan(io, addr, 1, PORT_MAX);
+                try rangedScan(io, gpa, addr, 1, PORT_MAX);
             },
             .range => |range| {
-                try rangedScan(io, addr, range.start, range.end);
+                try rangedScan(io, gpa, addr, range.start, range.end);
             },
             .one => |port| {
-                const open = defaultScan(io, addr, port);
+                const open = defaultScan(io, addr, port, .tcp);
                 if (open) {
                     std.debug.print("Port: {d: >5} is open\n", .{port});
                 }
