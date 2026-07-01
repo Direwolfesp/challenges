@@ -19,7 +19,7 @@ const CpuMonitor = struct {
     registry: std.AutoHashMap(u32, Timings),
     gpa: Allocator,
     out: *Io.Writer,
-    max_cpu: ?u32 = null,
+    max_cpu: u32 = 0,
 
     const Timings = struct {
         busy: u64,
@@ -82,13 +82,10 @@ const CpuMonitor = struct {
 
                 const busy_time = user + nice + system + irq + soft_irq + steal + guest + guest_nice;
                 const idle_time = idle + iowait;
-                const cpu_number = try std.fmt.parseInt(u8, key[3..], 10);
 
-                if (self.max_cpu) |*max_cpu| {
-                    max_cpu.* = @max(max_cpu.*, cpu_number);
-                } else {
-                    self.max_cpu = cpu_number;
-                }
+                // Update cpu count
+                const cpu_number = try std.fmt.parseInt(u8, key[3..], 10);
+                self.max_cpu = @max(self.max_cpu, cpu_number);
 
                 // update old values if present or insert a
                 // new entry.
@@ -114,7 +111,7 @@ const CpuMonitor = struct {
         try self.out.writeAll(AnsiCodes.clear_screen);
         try self.out.print("CPU usage monitor\n", .{});
 
-        for (0..self.max_cpu.? + 1) |cpu| {
+        for (0..self.max_cpu + 1) |cpu| {
             const cpu_num: u32 = @intCast(cpu);
             const timings = self.registry.get(cpu_num) orelse continue;
             try self.printBar(cpu_num, timings);
