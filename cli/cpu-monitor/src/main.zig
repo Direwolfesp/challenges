@@ -7,8 +7,8 @@ const Allocator = std.mem.Allocator;
 var is_running: std.atomic.Value(bool) = .init(true);
 
 pub const AnsiCodes = struct {
-    pub const cursor_home = "\x1B[2J";
-    pub const clear_screen = "\x1B[H";
+    pub const cursor_home = "\x1B[H";
+    pub const clear_screen = "\x1B[2J";
     pub const enable_alternate_buffer = "\x1B[?1049h";
     pub const disable_alternate_buffer = "\x1B[?1049l";
     pub const hide_the_cursor = "\x1B[?25l";
@@ -155,7 +155,7 @@ const CpuMonitor = struct {
     fn enableSignalHandler() void {
         var sa: linux.Sigaction = .{
             .handler = .{ .handler = shutdown },
-            .flags = linux.SA.RESTART,
+            .flags = 0,
             .mask = linux.sigemptyset(),
         };
         _ = linux.sigaction(linux.SIG.TERM, &sa, null);
@@ -199,6 +199,8 @@ const CpuMonitor = struct {
             const end: Io.Timestamp = .now(io, .awake);
             const left = end.durationTo(deadline);
             if (left.toNanoseconds() < 0) continue;
+
+            // TODO: this does not get interrupted by signals, why?
             try io.sleep(left, .awake);
         }
     }
@@ -213,7 +215,7 @@ pub fn main(init: std.process.Init) !void {
 
     var mon: CpuMonitor = .init(gpa, stdout);
     defer mon.deinit();
-    try mon.runLoopTimed(io, .fromMilliseconds(400));
+    try mon.runLoopTimed(io, .fromMilliseconds(1000));
 
     try stdout.flush();
 }
