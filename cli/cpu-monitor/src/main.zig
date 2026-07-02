@@ -3,9 +3,6 @@ const linux = std.os.linux;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-// Stinky global but its necessary for the signal shutdown
-var is_running: std.atomic.Value(bool) = .init(true);
-
 pub const AnsiCodes = struct {
     pub const cursor_home = "\x1B[H";
     pub const clear_screen = "\x1B[2J";
@@ -21,6 +18,11 @@ const CpuMonitor = struct {
     out: *Io.Writer,
     max_cpu: u32 = 0,
 
+    /// Static variable used alongside the monitor instance, used
+    /// for synchronization with signals and handles termination.
+    var status: Runner = .{};
+
+    /// Timing data for a CPU
     const Timings = struct {
         busy: u64,
         idle: u64,
@@ -28,7 +30,27 @@ const CpuMonitor = struct {
         old_idle: ?u64 = null,
     };
 
-    pub fn init(gpa: Allocator, out: *Io.Writer) CpuMonitor {
+    /// Manages the global state of the program
+    /// and its used to signal termination
+    const Runner = struct {
+        io: Io = undefined,
+        stop: Io.Event = .unset,
+
+        pub fn isRunning(self: Runner) bool {
+            return !self.stop.isSet();
+        }
+
+        pub fn shutdown(self: *Runner) void {
+            self.stop.set(self.io);
+        }
+
+        pub fn waitTimeout(self: *Runner, timeout: Io.Timeout) Io.Event.WaitTimeoutError!void {
+            return self.stop.waitTimeout(self.io, timeout);
+        }
+    };
+
+    pub fn init(io: Io, gpa: Allocator, out: *Io.Writer) CpuMonitor {
+        status.io = io;
         return .{
             .out = out,
             .gpa = gpa,
@@ -144,9 +166,7 @@ const CpuMonitor = struct {
     /// Shutdowns the main loop
     fn shutdown(sig: linux.SIG) callconv(.c) void {
         switch (sig) {
-            .INT, .TERM => {
-                is_running.store(false, .release);
-            },
+            .INT, .TERM => status.shutdown(),
             else => unreachable,
         }
     }
@@ -184,7 +204,7 @@ const CpuMonitor = struct {
         try self.setUpTerminal();
         defer self.restoreTerminal() catch @panic("Could not restore terminal");
 
-        while (is_running.load(.acquire)) {
+        while (status.isRunning()) {
             const start: Io.Timestamp = .now(io, .awake);
             const deadline = start.addDuration(timeout);
 
@@ -198,10 +218,19 @@ const CpuMonitor = struct {
 
             const end: Io.Timestamp = .now(io, .awake);
             const left = end.durationTo(deadline);
+
             if (left.toNanoseconds() < 0) continue;
 
-            // TODO: this does not get interrupted by signals, why?
-            try io.sleep(left, .awake);
+            const t: Io.Timeout = .{ .duration = .{
+                .raw = left,
+                .clock = .awake,
+            } };
+
+            status.waitTimeout(t) catch |err| switch (err) {
+                // should I treat any of these?
+                error.Timeout => {},
+                error.Canceled => {},
+            };
         }
     }
 };
@@ -209,13 +238,13 @@ const CpuMonitor = struct {
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.arena.allocator();
+
     var stdout_buf: [2048]u8 = undefined;
-    var stdout_wr: Io.File.Writer = .init(.stdout(), io, &stdout_buf);
-    const stdout = &stdout_wr.interface;
+    var stdout: Io.File.Writer = .init(.stdout(), io, &stdout_buf);
 
-    var mon: CpuMonitor = .init(gpa, stdout);
+    var mon: CpuMonitor = .init(io, gpa, &stdout.interface);
     defer mon.deinit();
-    try mon.runLoopTimed(io, .fromMilliseconds(1000));
+    try mon.runLoopTimed(io, .fromMilliseconds(500));
 
-    try stdout.flush();
+    try stdout.interface.flush();
 }
