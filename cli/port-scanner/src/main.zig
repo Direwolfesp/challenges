@@ -48,23 +48,27 @@ pub fn parseArgs(args: []const []const u8) !Args {
                 if (i == args.len) fatal("Missing port argument!", .{});
 
                 var iter = std.mem.tokenizeSequence(u8, args[i], "..");
-                const start = iter.next();
-                const end = iter.next();
+                const start_str = iter.next();
+                const end_str = iter.next();
 
-                if (start != null and end != null) {
-                    options.port = .{
-                        .range = .{
-                            .start = std.fmt.parseInt(u16, start.?, 10) catch |e|
-                                fatal("Invalid starting port: {t}", .{e}),
-                            .end = std.fmt.parseInt(u16, end.?, 10) catch |e|
-                                fatal("Invalid ending port: {t}", .{e}),
-                        },
-                    };
-                } else if (start != null and end == null) {
-                    options.port = .{
-                        .one = std.fmt.parseInt(u16, start.?, 10) catch |e|
-                            fatal("Invalid port: {t}", .{e}),
-                    };
+                if (start_str != null and end_str != null) {
+                    const start = std.fmt.parseInt(u16, start_str.?, 10) catch |e|
+                        fatal("Invalid starting port: {t}", .{e});
+                    const end = std.fmt.parseInt(u16, end_str.?, 10) catch |e|
+                        fatal("Invalid ending port: {t}", .{e});
+
+                    if (start > end) {
+                        fatal("Port range must be ascending", .{});
+                    }
+
+                    options.port = .{ .range = .{
+                        .start = start,
+                        .end = end,
+                    } };
+                } else if (start_str != null and end_str == null) {
+                    const one = std.fmt.parseInt(u16, start_str.?, 10) catch |e|
+                        fatal("Invalid port: {t}", .{e});
+                    options.port = .{ .one = one };
                 } else {
                     fatal("Invalid port range", .{});
                 }
