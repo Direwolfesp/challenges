@@ -3,7 +3,7 @@ const linux = std.os.linux;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-pub const AnsiCodes = struct {
+pub const Ansi = struct {
     pub const cursor_home = "\x1B[H";
     pub const clear_screen = "\x1B[2J";
     pub const enable_alternate_buffer = "\x1B[?1049h";
@@ -139,11 +139,11 @@ const CpuMonitor = struct {
 
     /// Renders the main graphics
     fn display(self: *CpuMonitor) !void {
-        try self.out.writeAll(AnsiCodes.cursor_home);
-        try self.out.writeAll(AnsiCodes.clear_screen);
+        try self.out.writeAll(Ansi.cursor_home);
+        try self.out.writeAll(Ansi.clear_screen);
         try self.out.print("{s}CPU usage monitor (ctrl-c to exit){s}\n", .{
-            AnsiCodes.bold,
-            AnsiCodes.reset,
+            Ansi.bold,
+            Ansi.reset,
         });
 
         for (0..self.max_cpu + 1) |cpu| {
@@ -169,18 +169,18 @@ const CpuMonitor = struct {
         const num_bars: usize = @intFromFloat(try std.math.divFloor(f64, usage * BarOptions.LENGTH, 100));
         const empty_bars: usize = BarOptions.LENGTH - num_bars;
 
-        try self.out.writeAll(AnsiCodes.grey ++ .{'['} ++ AnsiCodes.reset);
-        try self.out.splatBytesAll(AnsiCodes.magenta ++ BarOptions.CHAR ++ AnsiCodes.reset, num_bars);
+        try self.out.writeAll(Ansi.grey ++ .{'['} ++ Ansi.reset);
+        try self.out.splatBytesAll(Ansi.magenta ++ BarOptions.CHAR ++ Ansi.reset, num_bars);
         try self.out.splatByteAll(BarOptions.EMPTY_CHAR, empty_bars);
-        try self.out.writeAll(AnsiCodes.grey ++ .{']'} ++ AnsiCodes.reset);
+        try self.out.writeAll(Ansi.grey ++ .{']'} ++ Ansi.reset);
 
         try self.out.print(" {s}cpu{d: <5}{s} {s}{d:.2}%{s}\n", .{
-            AnsiCodes.blue,
+            Ansi.blue,
             cpu,
-            AnsiCodes.reset,
-            AnsiCodes.green,
+            Ansi.reset,
+            Ansi.green,
             usage,
-            AnsiCodes.reset,
+            Ansi.reset,
         });
     }
 
@@ -204,14 +204,14 @@ const CpuMonitor = struct {
     }
 
     pub fn setUpTerminal(self: *CpuMonitor) !void {
-        try self.out.writeAll(AnsiCodes.enable_alternate_buffer);
-        try self.out.writeAll(AnsiCodes.hide_the_cursor);
+        try self.out.writeAll(Ansi.enable_alternate_buffer);
+        try self.out.writeAll(Ansi.hide_the_cursor);
         try self.out.flush();
     }
 
     pub fn restoreTerminal(self: *CpuMonitor) !void {
-        try self.out.writeAll(AnsiCodes.disable_alternate_buffer);
-        try self.out.writeAll(AnsiCodes.show_the_cursor);
+        try self.out.writeAll(Ansi.disable_alternate_buffer);
+        try self.out.writeAll(Ansi.show_the_cursor);
         try self.out.flush();
     }
 
