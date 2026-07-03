@@ -10,6 +10,16 @@ pub const AnsiCodes = struct {
     pub const disable_alternate_buffer = "\x1B[?1049l";
     pub const hide_the_cursor = "\x1B[?25l";
     pub const show_the_cursor = "\x1B[?25h";
+    pub const reset = "\x1b[0m";
+    pub const bold = "\x1b[1m";
+    pub const dim = "\x1b[2m";
+    pub const red = "\x1b[31m";
+    pub const green = "\x1b[32m";
+    pub const yellow = "\x1b[33m";
+    pub const blue = "\x1b[34m";
+    pub const magenta = "\x1b[35m";
+    pub const cyan = "\x1b[36m";
+    pub const grey = "\x1b[90m";
 };
 
 const CpuMonitor = struct {
@@ -131,7 +141,10 @@ const CpuMonitor = struct {
     fn display(self: *CpuMonitor) !void {
         try self.out.writeAll(AnsiCodes.cursor_home);
         try self.out.writeAll(AnsiCodes.clear_screen);
-        try self.out.print("CPU usage monitor\n", .{});
+        try self.out.print("{s}CPU usage monitor (ctrl-c to exit){s}\n", .{
+            AnsiCodes.bold,
+            AnsiCodes.reset,
+        });
 
         for (0..self.max_cpu + 1) |cpu| {
             const cpu_num: u32 = @intCast(cpu);
@@ -156,11 +169,19 @@ const CpuMonitor = struct {
         const num_bars: usize = @intFromFloat(try std.math.divFloor(f64, usage * BarOptions.LENGTH, 100));
         const empty_bars: usize = BarOptions.LENGTH - num_bars;
 
-        try self.out.writeByte('[');
-        try self.out.splatBytesAll(BarOptions.CHAR, num_bars);
+        try self.out.writeAll(AnsiCodes.grey ++ .{'['} ++ AnsiCodes.reset);
+        try self.out.splatBytesAll(AnsiCodes.magenta ++ BarOptions.CHAR ++ AnsiCodes.reset, num_bars);
         try self.out.splatByteAll(BarOptions.EMPTY_CHAR, empty_bars);
-        try self.out.writeByte(']');
-        try self.out.print(" cpu{d: <5} {d:.2}%\n", .{ cpu, usage });
+        try self.out.writeAll(AnsiCodes.grey ++ .{']'} ++ AnsiCodes.reset);
+
+        try self.out.print(" {s}cpu{d: <5}{s} {s}{d:.2}%{s}\n", .{
+            AnsiCodes.blue,
+            cpu,
+            AnsiCodes.reset,
+            AnsiCodes.green,
+            usage,
+            AnsiCodes.reset,
+        });
     }
 
     /// Shutdowns the main loop
