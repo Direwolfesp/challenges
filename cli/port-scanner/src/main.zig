@@ -23,7 +23,7 @@ pub const Args = struct {
         \\
         \\Port scanner utility.
         \\=> --port: The port or ports to scan. Ex. --port 8080, --port 400..8080
-        \\=> --host: The hostname to scan. Ex. --host localhost, --host 192.168.1.* 
+        \\=> --host: The hostname to scan. Ex. --host localhost, --host 192.168.1.*
         \\=> --help: Show this help
     ;
 };

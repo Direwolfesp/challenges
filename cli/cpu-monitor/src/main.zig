@@ -217,8 +217,7 @@ const CpuMonitor = struct {
 
     /// Runs the cpu monitor, blocking until a termination signal.
     pub fn runLoopTimed(self: *CpuMonitor, io: Io, timeout: Io.Duration) !void {
-        const stat_buf: []u8 = try self.gpa.alloc(u8, 1024 * 20);
-        defer self.gpa.free(stat_buf);
+        var stat_buf: [1024 * 20]u8 = undefined;
 
         enableSignalHandler();
 
@@ -229,7 +228,7 @@ const CpuMonitor = struct {
             const start: Io.Timestamp = .now(io, .awake);
             const deadline = start.addDuration(timeout);
 
-            var wr: Io.Writer = .fixed(stat_buf);
+            var wr: Io.Writer = .fixed(&stat_buf);
             try readProcStat(io, &wr);
             const data = wr.buffered();
 
@@ -248,9 +247,8 @@ const CpuMonitor = struct {
             } };
 
             status.waitTimeout(t) catch |err| switch (err) {
-                // should I treat any of these?
                 error.Timeout => {},
-                error.Canceled => {},
+                error.Canceled => return,
             };
         }
     }
@@ -261,11 +259,12 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
 
     var stdout_buf: [2048]u8 = undefined;
-    var stdout: Io.File.Writer = .init(.stdout(), io, &stdout_buf);
+    var stdout_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buf);
+    const stdout = &stdout_writer.interface;
 
-    var mon: CpuMonitor = .init(io, gpa, &stdout.interface);
+    var mon: CpuMonitor = .init(io, gpa, stdout);
     defer mon.deinit();
     try mon.runLoopTimed(io, .fromMilliseconds(500));
 
-    try stdout.interface.flush();
+    try stdout.flush();
 }
