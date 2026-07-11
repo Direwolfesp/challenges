@@ -1,9 +1,9 @@
 //! Dumb keyboard typer for linux.
-//! Compile with: zig build-exe autokeys.zig -lc
-//! Zig version: 0.15.2
+//! Zig version: 0.16.0
 
 const std = @import("std");
-const linux = @cImport(@cInclude("linux/input.h"));
+const Io = std.Io;
+const linux = @import("linux");
 
 const KeyAction = enum(i32) {
     pressed = 1,
@@ -105,33 +105,28 @@ fn keyEvent(key: KeyCode, action: KeyAction) linux.input_event {
     return key_press;
 }
 
-pub fn main() !void {
-    var alloc: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
-    defer alloc.deinit();
-    const arena = alloc.allocator();
-
-    const args = try std.process.argsAlloc(arena);
-    defer std.process.argsFree(arena, args);
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(arena);
+    const io = init.io;
 
     if (args.len != 3) {
-        std.log.err(
-            \\Sends <text> via key events (EV_KEY) to the desired device_file.
+        std.process.fatal(
             \\Usage: ./main <device_file> <text> Elevated privileges may be needed.
+            \\Sends <text> via key events (EV_KEY) to the desired device_file.
         , .{});
-        std.process.exit(1);
     }
 
     const filename, const text = .{ args[1], args[2] };
 
-    const f = std.fs.openFileAbsolute(filename, .{ .mode = .write_only }) catch |err| {
-        std.log.err("Cannot open file '{s}': {t}", .{ filename, err });
-        std.process.exit(1);
+    const file = Io.Dir.openFileAbsolute(io, filename, .{ .mode = .write_only }) catch |err| {
+        std.process.fatal("Cannot open file '{s}': {t}", .{ filename, err });
     };
-    defer f.close();
+    defer file.close(io);
 
     var write_buf: [1024]u8 = undefined;
-    var file_writer = f.writer(&write_buf);
-    const file = &file_writer.interface;
+    var file_writer = file.writer(io, &write_buf);
+    const writer = &file_writer.interface;
 
     for (text) |b| {
         const key = KeyCode.fromString(b) orelse continue;
@@ -142,14 +137,14 @@ pub fn main() !void {
         const key_release = keyEvent(key, .released);
         const sync3_ev = syncEvent(key);
 
-        try file.writeStruct(sync_ev, .little);
-        try file.writeStruct(key_press, .little);
-        try file.writeStruct(sync2_ev, .little);
-        try file.writeStruct(key_release, .little);
-        try file.writeStruct(sync3_ev, .little);
-        try file.flush();
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        try writer.writeStruct(sync_ev, .little);
+        try writer.writeStruct(key_press, .little);
+        try writer.writeStruct(sync2_ev, .little);
+        try writer.writeStruct(key_release, .little);
+        try writer.writeStruct(sync3_ev, .little);
+        try writer.flush();
+        try io.sleep(.fromMilliseconds(10), .awake);
     }
 
-    try file.flush();
+    try writer.flush();
 }

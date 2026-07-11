@@ -1,9 +1,9 @@
 //! Dumb keylogger for linux.
-//! Compile with: zig build-exe key_logger.zig -lc
-//! Zig version: 0.15.2
+//! Zig version: 0.16.0
 
 const std = @import("std");
-const linux = @cImport(@cInclude("linux/input.h"));
+const Io = std.Io;
+const linux = @import("linux");
 
 const KeyAction = enum(i32) {
     PRESSED = 1,
@@ -63,37 +63,32 @@ const KeyCode = enum(i32) {
     }
 };
 
-pub fn main() !void {
-    var alloc: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
-    defer alloc.deinit();
-    const arena = alloc.allocator();
-
-    const args = try std.process.argsAlloc(arena);
-    defer std.process.argsFree(arena, args);
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(arena);
+    const io = init.io;
 
     if (args.len != 2) {
-        std.log.err("Usage: ./key_logger <device_file>. Elevated privileges may be needed.", .{});
-        std.process.exit(1);
+        std.process.fatal("Usage: ./key_logger <device_file>. Elevated privileges may be needed.\n", .{});
     }
 
     const filename = args[1];
 
-    const f = std.fs.openFileAbsolute(filename, .{ .mode = .read_only }) catch |err| {
-        std.log.err("Cannot open file '{s}': {t}", .{ filename, err });
-        std.process.exit(1);
+    const file = Io.Dir.openFileAbsolute(io, filename, .{ .mode = .read_only }) catch |err| {
+        std.process.fatal("Cannot open file '{s}': {t}\n", .{ filename, err });
     };
-    defer f.close();
+    defer file.close(io);
 
     var read_buf: [1024]u8 = undefined;
-    var file_reader = f.reader(&read_buf);
-    const file = &file_reader.interface;
+    var file_reader = file.reader(io, &read_buf);
+    const reader = &file_reader.interface;
 
-    while (file.takeStruct(linux.input_event, .little)) |ev| {
+    while (reader.takeStruct(linux.input_event, .little)) |ev| {
         if (ev.type != linux.EV_KEY)
             continue;
 
-        const key = std.meta.intToEnum(KeyCode, ev.code) catch continue;
-        const action = try std.meta.intToEnum(KeyAction, ev.value);
+        const key = std.enums.fromInt(KeyCode, ev.code) orelse continue;
+        const action = std.enums.fromInt(KeyAction, ev.value) orelse continue;
 
         if (action == .PRESSED) {
             std.debug.print("{s}", .{key.toString()});

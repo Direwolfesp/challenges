@@ -59,15 +59,16 @@ pub const TreeWalker = struct {
 
             try self.out.print("{s}{s}{s}\n", .{ prefix, symbols[0], entry.name });
 
-            if (entry.kind == .directory) {
-                self.num_directories += 1;
-                const new_prefix = try std.fmt.allocPrint(alloc, "{s}{s}", .{ prefix, symbols[1] });
-                defer alloc.free(new_prefix);
-                const new_dir = try dir.openDir(io, entry.name, .{ .iterate = true });
-                defer new_dir.close(io);
-                try self.walkInner(io, alloc, new_dir, new_prefix);
-            } else {
-                self.num_files += 1;
+            switch (entry.kind) {
+                .directory => {
+                    self.num_directories += 1;
+                    const new_prefix = try std.fmt.allocPrint(alloc, "{s}{s}", .{ prefix, symbols[1] });
+                    defer alloc.free(new_prefix);
+                    const new_dir = try dir.openDir(io, entry.name, .{ .iterate = true });
+                    defer new_dir.close(io);
+                    try self.walkInner(io, alloc, new_dir, new_prefix);
+                },
+                else => self.num_files += 1,
             }
         }
     }
@@ -104,12 +105,13 @@ pub fn main(init: std.process.Init) !void {
         return clap.helpToFile(init.io, .stderr(), clap.Help, &params, .{});
 
     var stdout_buf: [4096]u8 = undefined;
-    var stdout_writer: Io.File.Writer = .init(.stdout(), init.io, &stdout_buf);
+    var stdout_writer = Io.File.stdout().writerStreaming(init.io, &stdout_buf);
     const stdout = &stdout_writer.interface;
 
     const show_all = res.args.all != 0;
     var directories = blk: {
         var arr: std.ArrayList([]const u8) = .empty;
+        errdefer arr.deinit(init.gpa);
         for (res.positionals[0]) |pos|
             try arr.append(init.gpa, pos);
         if (arr.items.len == 0)
