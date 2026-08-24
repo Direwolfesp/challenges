@@ -203,7 +203,7 @@ const CpuMonitor = struct {
         _ = linux.sigaction(linux.SIG.INT, &sa, null);
     }
 
-    pub fn setUpTerminal(self: *CpuMonitor) !void {
+    pub fn setupTerminal(self: *CpuMonitor) !void {
         try self.out.writeAll(Ansi.enable_alternate_buffer);
         try self.out.writeAll(Ansi.hide_the_cursor);
         try self.out.flush();
@@ -221,7 +221,7 @@ const CpuMonitor = struct {
 
         enableSignalHandler();
 
-        try self.setUpTerminal();
+        try self.setupTerminal();
         defer self.restoreTerminal() catch @panic("Could not restore terminal");
 
         while (status.isRunning()) {

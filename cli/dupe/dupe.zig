@@ -1,9 +1,13 @@
 //! Find duplicate files in a directory (recursively)
 //! and let the user choose which one to delete
 const std = @import("std");
+const Io = std.Io;
 const Md5 = std.crypto.hash.Md5;
 
 const log = std.log.scoped(.dupe);
+
+const esc = "\x1B";
+const csi = esc ++ "[";
 
 const FileMeta = struct {
     name: []const u8,
@@ -11,30 +15,15 @@ const FileMeta = struct {
     size: u64 = 0,
 };
 
-fn mapFile(file: std.fs.File, size: u64) ![]align(std.heap.page_size_min) u8 {
-    if (size == 0) return error.FileIsEmpty;
-    return try std.posix.mmap(
-        null,
-        @intCast(size),
-        std.posix.PROT.READ,
-        .{ .TYPE = .SHARED },
-        file.handle,
-        0,
-    );
-}
-
-const esc = "\x1B";
-const csi = esc ++ "[";
-
-pub fn setCursor(out: *std.Io.Writer, x: usize, y: usize) !void {
+pub fn setCursor(out: *Io.Writer, x: usize, y: usize) !void {
     try out.print(csi ++ "{};{}H", .{ y + 1, x + 1 });
 }
 
-fn clearScreen(out: *std.Io.Writer) !void {
+fn clearScreen(out: *Io.Writer) !void {
     try out.writeAll(csi ++ "1J");
 }
 
-fn printMenu(out: *std.Io.Writer, duplicates: std.ArrayListUnmanaged(*FileMeta)) !void {
+fn printMenu(out: *Io.Writer, duplicates: std.ArrayListUnmanaged(*FileMeta)) !void {
     const size = duplicates.items[0].size;
     const total_size = size * duplicates.items.len;
     try out.print("\nFound duplicate (Unique size: {B}, Total size: {B}): \n", .{ size, size * total_size });
@@ -43,13 +32,10 @@ fn printMenu(out: *std.Io.Writer, duplicates: std.ArrayListUnmanaged(*FileMeta))
     try out.print("Select the file or files to delete separated by spaces:\n:: ", .{});
 }
 
-pub fn main() !void {
-    var alloc: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
-    defer alloc.deinit();
-    const arena = alloc.allocator();
-
-    const args = try std.process.argsAlloc(arena);
-    defer std.process.argsFree(arena, args);
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(arena);
 
     if (args.len != 2) {
         log.err("Usage: dupe <directory>", .{});
@@ -58,21 +44,21 @@ pub fn main() !void {
 
     const dirname: []const u8 = args[1];
 
-    var dir = std.fs.cwd().openDir(dirname, .{ .iterate = true }) catch |err| {
+    var dir = Io.Dir.cwd().openDir(io, dirname, .{ .iterate = true }) catch |err| {
         log.err("Could not open dir '{s}'. Error: {t}", .{ dirname, err });
         return;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var stdout_buf: [2048]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const stdout = &stdout_writer.interface;
 
     var iter = try dir.walk(arena);
     defer iter.deinit();
 
     // quickly filter files by size
-    var files: std.AutoArrayHashMapUnmanaged(u64, std.ArrayListUnmanaged(FileMeta)) = .empty;
+    var files: std.array_hash_map.Auto(u64, std.ArrayList(FileMeta)) = .empty;
     defer {
         for (files.values()) |*metadatas| {
             for (metadatas.items) |meta|
@@ -93,10 +79,10 @@ pub fn main() !void {
     }
 
     // register files based on size
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         if (entry.kind != .file) continue;
 
-        const st = entry.dir.statFile(entry.basename) catch |err| {
+        const st = entry.dir.statFile(io, entry.basename, .{}) catch |err| {
             log.err("Could not stat file '{s}': {t}", .{ entry.path, err });
             continue;
         };
@@ -124,18 +110,19 @@ pub fn main() !void {
     for (files.keys(), files.values()) |size, metas| {
         if (metas.items.len > 1) {
             for (metas.items) |*file_meta| {
-                const file = try dir.openFile(file_meta.name, .{});
-                defer file.close();
+                const file = try dir.openFile(io, file_meta.name, .{});
+                defer file.close(io);
 
-                const contents = mapFile(file, size) catch |err| switch (err) {
-                    error.FileIsEmpty => continue,
-                    else => return err,
-                };
-                defer std.posix.munmap(contents);
+                var mapped = try file.createMemoryMap(io, .{
+                    .len = size,
+                    .populate = false,
+                    .protection = .{ .read = true },
+                });
+                defer mapped.destroy(io);
 
                 var hash: [Md5.digest_length]u8 = undefined;
                 var md5 = Md5.init(.{});
-                md5.update(contents);
+                md5.update(mapped.memory);
                 md5.final(&hash);
 
                 // if hash matches any other, register the duplicate
@@ -152,7 +139,7 @@ pub fn main() !void {
     }
 
     var stdin_buf: [2048]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buf);
+    var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
     const stdin = &stdin_reader.interface;
 
     var found_dup = false; // flag to check if there were no dupes
@@ -188,7 +175,7 @@ pub fn main() !void {
                 }
 
                 const to_delete = possible_dup.items[index].name;
-                dir.deleteFile(to_delete) catch |err| {
+                dir.deleteFile(io, to_delete) catch |err| {
                     log.err("Error deleting file '{s}'. Err: {t}", .{ to_delete, err });
                     return; // hard exit on error
                 };
