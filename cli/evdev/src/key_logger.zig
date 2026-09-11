@@ -79,6 +79,10 @@ pub fn main(init: std.process.Init) !void {
     };
     defer file.close(io);
 
+    if (!std.fs.path.isAbsolute(filename) or !std.mem.startsWith(u8, filename, "/dev/input")) {
+        std.log.warn("Using a non standard device file name.", .{});
+    }
+
     var read_buf: [1024]u8 = undefined;
     var file_reader = file.reader(io, &read_buf);
     const reader = &file_reader.interface;

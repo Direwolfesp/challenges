@@ -3,6 +3,21 @@ const linux = std.os.linux;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.arena.allocator();
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stdout_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buf);
+    const stdout = &stdout_writer.interface;
+
+    var mon: CpuMonitor = .init(io, gpa, stdout);
+    defer mon.deinit();
+    try mon.runLoopTimed(io, .fromMilliseconds(500));
+
+    try stdout.flush();
+}
+
 pub const Ansi = struct {
     pub const cursor_home = "\x1B[H";
     pub const clear_screen = "\x1B[2J";
@@ -253,18 +268,3 @@ const CpuMonitor = struct {
         }
     }
 };
-
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    const gpa = init.arena.allocator();
-
-    var stdout_buf: [2048]u8 = undefined;
-    var stdout_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buf);
-    const stdout = &stdout_writer.interface;
-
-    var mon: CpuMonitor = .init(io, gpa, stdout);
-    defer mon.deinit();
-    try mon.runLoopTimed(io, .fromMilliseconds(500));
-
-    try stdout.flush();
-}
