@@ -73,9 +73,9 @@ pub fn main(init: std.process.Init) !void {
 
     const child: i32 = @intCast(linux.fork());
     if (child == 0) { // child
-        var shit = try gpa.alloc([]const u8, t.args.len + 1);
-        shit[0] = t.name;
-        @memcpy(shit[1..], t.args);
+        var prog_args = try gpa.alloc([]const u8, t.args.len + 1);
+        prog_args[0] = t.name;
+        @memcpy(prog_args[1..], t.args);
 
         const r = linux.ptrace(linux.PTRACE.TRACEME, 0, 0, 0, 0);
         if (r == -1) {
@@ -87,7 +87,7 @@ pub fn main(init: std.process.Init) !void {
         _ = linux.dup2(file.handle, linux.STDOUT_FILENO);
         _ = linux.dup2(file.handle, linux.STDERR_FILENO);
 
-        switch (std.process.replace(init.io, .{ .argv = shit })) {
+        switch (std.process.replace(init.io, .{ .argv = prog_args })) {
             else => |err| std.process.fatal("Could not spawn child: {t}", .{err}),
         }
     } else if (child > 0) { // parent
@@ -148,7 +148,15 @@ pub fn main(init: std.process.Init) !void {
 }
 
 pub fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: sys.user_regs_struct) !void {
-    try out.print("{s}(", .{syscall.name});
+    var term: std.Io.Terminal = .{ .mode = .escape_codes, .writer = out };
+    defer term.setColor(.reset) catch {};
+
+    try term.setColor(.blue);
+    try out.print("{s}", .{syscall.name});
+    try term.setColor(.reset);
+    try out.print("(", .{});
+    try term.setColor(.magenta);
+
     for (syscall.regs, 0..) |reg_name, i| {
         const reg_val: i64 = getRegisterValue(reg_name, registers);
 
@@ -161,10 +169,15 @@ pub fn printSyscall(out: *std.Io.Writer, syscall: SyscallInfo, registers: sys.us
             try out.print("0x{x}", .{reg_val});
         }
         if (i != syscall.regs.len - 1) {
+            try term.setColor(.reset);
             try out.writeAll(", ");
+            try term.setColor(.magenta);
         }
     }
-    try out.print(") = 0x{x}\n", .{registers.rax});
+    try term.setColor(.reset);
+    try out.print(") = ", .{});
+    try term.setColor(.green);
+    try out.print("0x{x}\n", .{registers.rax});
 }
 
 fn getRegisterValue(reg_name: []const u8, registers: sys.user_regs_struct) i64 {
