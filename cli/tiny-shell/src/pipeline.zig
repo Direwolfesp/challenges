@@ -13,30 +13,51 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
 
-    try pipeline(io, gpa, &.{
-        .{
-            .args = &.{ "cat", "/etc/passwd" },
-            .redirect = .{ .stdout = true },
-        },
-        .{
-            .args = &.{ "wc", "-l" },
-            .redirect = .{ .stdout = true },
-        },
-        .{
-            .args = &.{"wc"},
-            .redirect = .{ .stdout = true },
-        },
-    });
+    {
+        try pipeline(io, gpa, &.{
+            .{
+                .args = &.{ "cat", "/etc/passwd" },
+                .redirect = .{ .stdout = true },
+            },
+            .{
+                .args = &.{ "wc", "-l" },
+                .redirect = .{ .stdout = true },
+            },
+            .{
+                .args = &.{"wc"},
+                .redirect = .{ .stdout = true },
+            },
+        });
+    }
+    {
+        try pipeline(io, gpa, &.{
+            .{
+                .args = &.{ "sh", "-c", "echo error >&2; echo hola" },
+                .redirect = .{ .stdout = true, .stderr = true },
+            },
+            .{
+                .args = &.{ "wc", "-l" },
+                .redirect = .{ .stdout = true },
+            },
+        });
+    }
+    {
+        try pipeline(io, gpa, &.{
+            .{
+                .args = &.{ "yes", "hello-world" },
+                .redirect = .{ .stdout = true, .stderr = true },
+            },
+            .{
+                .args = &.{ "head", "-5" },
+                .redirect = .{ .stdout = true },
+            },
+        });
+    }
 }
 
 pub const Pipe = struct {
     read_end: Io.File,
     write_end: Io.File,
-
-    /// reader process sucking from him
-    reader: ?Child.Id = null,
-    /// writer process pumping to him
-    writer: ?Child.Id = null,
 
     pub const PipeError = error{
         SystemFdQuotaExceeded,
@@ -44,7 +65,7 @@ pub const Pipe = struct {
         Unexpected,
     };
 
-    pub fn init() !Pipe {
+    pub fn open() !Pipe {
         var fds: [2]i32 = undefined;
         return switch (linux.errno(linux.pipe2(&fds, .{ .CLOEXEC = true }))) {
             .SUCCESS => .{
@@ -64,9 +85,25 @@ pub const Pipe = struct {
     }
 
     /// Idempotent
-    pub fn deinit(self: *Pipe) void {
-        if (self.read_end.handle != -1) _ = linux.close(self.read_end.handle);
-        if (self.read_end.handle != self.write_end.handle) _ = linux.close(self.write_end.handle);
+    pub fn closeAll(self: *Pipe) void {
+        self.closeRead();
+        self.closeWrite();
+    }
+
+    /// Idempotent
+    pub fn closeRead(self: *Pipe) void {
+        if (self.read_end.handle != -1) {
+            _ = linux.close(self.read_end.handle);
+            self.read_end.handle = -1;
+        }
+    }
+
+    /// Idempotent
+    pub fn closeWrite(self: *Pipe) void {
+        if (self.write_end.handle != -1) {
+            _ = linux.close(self.write_end.handle);
+            self.write_end.handle = -1;
+        }
     }
 };
 
@@ -117,7 +154,13 @@ const Pipeline = struct {
             try tty.writer.print("{f}", .{command});
             if (i != self.commands.len -| 1) {
                 tty.setColor(.magenta) catch return Io.Writer.Error.WriteFailed;
-                try tty.writer.writeAll(" | ");
+                try tty.writer.writeByte(' ');
+                if (command.redirect.stderr and command.redirect.stdout) {
+                    try tty.writer.writeAll("e+o>");
+                } else if (command.redirect.stderr) {
+                    try tty.writer.writeAll("e>");
+                }
+                try tty.writer.writeAll("| ");
                 tty.setColor(.reset) catch return Io.Writer.Error.WriteFailed;
             }
         }
@@ -130,12 +173,12 @@ pub fn pipeline(io: Io, arena: Allocator, commands: []const Command) !void {
 
     var pipes: std.ArrayList(Pipe) = try .initCapacity(arena, n_pipes);
     defer {
-        for (pipes.items) |*pipe| pipe.deinit();
+        for (pipes.items) |*pipe| pipe.closeAll();
         pipes.deinit(arena);
     }
 
     for (0..n_pipes) |_| {
-        const pipe: Pipe = try .init();
+        const pipe: Pipe = try .open();
         pipes.appendAssumeCapacity(pipe);
     }
 
@@ -155,15 +198,16 @@ pub fn pipeline(io: Io, arena: Allocator, commands: []const Command) !void {
                 break :blk child;
             } else if (is_first) {
                 std.debug.assert(i == 0);
-                const pipe = &pipes.items[i];
+                const pipe = pipes.items[i];
+
                 const stdout: StdIo = if (command.redirect.stdout) .{ .file = pipe.write_end } else .inherit;
                 const stderr: StdIo = if (command.redirect.stderr) .{ .file = pipe.write_end } else .inherit;
+
                 const child = try std.process.spawn(io, .{
                     .argv = command.args,
                     .stdout = stdout,
                     .stderr = stderr,
                 });
-                pipe.writer = child.id;
                 std.log.debug("Spawned first one: {s} 'id={?}'", .{ command.args[0], child.id });
                 break :blk child;
             } else if (is_mid) {
@@ -173,30 +217,35 @@ pub fn pipeline(io: Io, arena: Allocator, commands: []const Command) !void {
                 const stdin: StdIo = .{ .file = pipe_source.read_end };
                 const stdout: StdIo = if (command.redirect.stdout) .{ .file = pipe_sink.write_end } else .inherit;
                 const stderr: StdIo = if (command.redirect.stderr) .{ .file = pipe_sink.write_end } else .inherit;
+
                 const child = try std.process.spawn(io, .{
                     .argv = command.args,
                     .stdin = stdin,
                     .stdout = stdout,
                     .stderr = stderr,
                 });
-                pipe_sink.writer = child.id;
-                pipe_source.reader = child.id;
                 std.log.debug("Spawned middle one: {s} 'id={?}'", .{ command.args[0], child.id });
                 break :blk child;
             } else if (is_last) {
                 const pipe = &pipes.items[i - 1];
                 const stdin: StdIo = .{ .file = pipe.read_end };
+
                 const child = try std.process.spawn(io, .{
                     .argv = command.args,
                     .stdin = stdin,
                 });
-                pipe.reader = child.id;
                 std.log.debug("Spawned last one: {s} 'id={?}'", .{ command.args[0], child.id });
                 break :blk child;
             } else unreachable;
         };
 
         children.appendAssumeCapacity(child);
+    }
+
+    // We need to close all pipes from the parent process.
+    // So the only one using them are children.
+    for (pipes.items) |*pipe| {
+        pipe.closeAll();
     }
 
     // collect child results
@@ -206,16 +255,6 @@ pub fn pipeline(io: Io, arena: Allocator, commands: []const Command) !void {
         std.log.debug("Waiting child: {s} 'id={d}'", .{ name, pid });
 
         const res = try child.wait(io);
-
-        // Its important to close the corresponding pipes
-        // the process was using, so the other end can
-        // react to the end of streams.
-        for (pipes.items) |*pipe| {
-            if (pipe.reader) |reader_pid| if (reader_pid == pid)
-                pipe.read_end.close(io);
-            if (pipe.writer) |writer_pid| if (writer_pid == pid)
-                pipe.write_end.close(io);
-        }
 
         switch (res) {
             .exited => |code| {
