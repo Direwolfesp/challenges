@@ -4,9 +4,16 @@
 const std = @import("std");
 const linux = std.os.linux;
 
+const Pipeline = @import("pipeline.zig").Pipeline;
+
+pub const std_options: std.Options = .{
+    .log_level = .info,
+};
+
 const prompt = "$ ";
 const exit_msg = "bye user!";
-const default_PATH = "/usr/local/bin:/bin/:/usr/bin";
+
+const log = std.log.scoped(.shell);
 
 fn intHandler(_: linux.SIG) callconv(.c) void {}
 
@@ -69,36 +76,29 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        const pid = linux.fork();
+        // Execute pipeline
+        // TODO: integrate builtins as part of the pipeline
+        var p: Pipeline = try .init(arena, args.items);
+        const res = try p.run(io, arena);
 
-        if (pid == -1) {
-            std.log.err("fork error: {t}", .{linux.errno(pid)});
-        } else if (pid == 0) { // child
-            const argv_buf = try arena.allocSentinel(?[*:0]const u8, args.items.len, null);
-            for (args.items, 0..) |arg, i| {
-                const arg_sentinel = try arena.dupeSentinel(u8, arg, '\x00');
-                argv_buf[i] = arg_sentinel.ptr;
-            }
-            const command_name = argv_buf[0].?;
-
-            const path = init.environ_map.get("PATH") orelse default_PATH;
-            var path_it = std.mem.tokenizeScalar(u8, path, ':');
-            while (path_it.next()) |p| {
-                var path_buf: [linux.PATH_MAX]u8 = undefined;
-                const sep = if (std.mem.endsWith(u8, p, "/")) "" else "/";
-                const cmd = try std.fmt.bufPrintSentinel(&path_buf, "{s}{s}{s}", .{ p, sep, command_name }, '\x00');
-                _ = linux.execve(cmd, argv_buf, init.minimal.environ.block.slice);
-            }
-            std.log.err("Cannot execute '{s}': command not found", .{command_name});
-            linux.exit(127);
-        } else { // parent
-            // wait for child
-            var status: u32 = 0;
-            _ = linux.waitpid(@intCast(pid), &status, 0);
-            if (linux.W.IFSIGNALED(status)) {
-                const signal = linux.W.TERMSIG(status);
-                std.debug.print("Child terminated by a signal {t}\n", .{signal});
-            } else if (linux.W.IFEXITED(status)) {}
+        switch (res) {
+            .status => |st| switch (st.term) {
+                .exited => |exit| {
+                    log.info("Command ({d}) exited with code {d}", .{ st.pid, exit });
+                },
+                .signal => |sig| {
+                    log.info("Command ({d}) killed by SIG{t}", .{ st.pid, sig });
+                },
+                .stopped => |sig| {
+                    log.info("Command ({d}) stoped by SIG{t}", .{ st.pid, sig });
+                },
+                .unknown => |code| {
+                    log.info("Command ({d}) terminated by unknown reasons {d}", .{ st.pid, code });
+                },
+            },
+            .error_msg => |err| {
+                log.err("{s}", .{err});
+            },
         }
     }
 }

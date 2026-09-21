@@ -5,54 +5,49 @@ const Io = std.Io;
 const Child = std.process.Child;
 const StdIo = std.process.SpawnOptions.StdIo;
 
-pub const std_options: std.Options = .{
-    .log_level = .info,
-};
+const log = std.log.scoped(.pipeline);
 
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    const gpa = init.gpa;
+test "pipeline" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    std.testing.log_level = .info;
 
-    {
-        try pipeline(io, gpa, &.{
-            .{
-                .args = &.{ "cat", "/etc/passwd" },
-                .redirect = .{ .stdout = true },
-            },
-            .{
-                .args = &.{ "wc", "-l" },
-                .redirect = .{ .stdout = true },
-            },
-            .{
-                .args = &.{"wc"},
-                .redirect = .{ .stdout = true },
-            },
-        });
-    }
-    {
-        try pipeline(io, gpa, &.{
-            .{
-                .args = &.{ "sh", "-c", "echo error >&2; echo hola" },
-                .redirect = .{ .stdout = true, .stderr = true },
-            },
-            .{
-                .args = &.{ "wc", "-l" },
-                .redirect = .{ .stdout = true },
-            },
-        });
-    }
-    {
-        try pipeline(io, gpa, &.{
-            .{
-                .args = &.{ "yes", "hello-world" },
-                .redirect = .{ .stdout = true, .stderr = true },
-            },
-            .{
-                .args = &.{ "head", "-5" },
-                .redirect = .{ .stdout = true },
-            },
-        });
-    }
+    try exec(io, gpa, &.{
+        .{
+            .args = &.{ "cat", "/etc/passwd" },
+            .redirect = .{ .stdout = true },
+        },
+        .{
+            .args = &.{ "wc", "-l" },
+            .redirect = .{ .stdout = true },
+        },
+        .{
+            .args = &.{"wc"},
+            .redirect = .{ .stdout = true },
+        },
+    });
+
+    try exec(io, gpa, &.{
+        .{
+            .args = &.{ "sh", "-c", "echo error >&2; echo hola" },
+            .redirect = .{ .stdout = true, .stderr = true },
+        },
+        .{
+            .args = &.{ "wc", "-l" },
+            .redirect = .{ .stdout = true },
+        },
+    });
+
+    try exec(io, gpa, &.{
+        .{
+            .args = &.{ "yes", "hello-world" },
+            .redirect = .{ .stdout = true, .stderr = true },
+        },
+        .{
+            .args = &.{ "head", "-5" },
+            .redirect = .{ .stdout = true },
+        },
+    });
 }
 
 pub const Pipe = struct {
@@ -139,11 +134,164 @@ pub const Command = struct {
 };
 
 /// Dummy struct for now, only for printing
-const Pipeline = struct {
+pub const Pipeline = struct {
     commands: []const Command,
 
-    pub fn init(commands: []const Command) Pipeline {
-        return .{ .commands = commands };
+    /// Result from the last command of the pipeline
+    const PipelineResult = union(enum) {
+        status: struct {
+            term: Child.Term,
+            pid: Child.Id,
+            stdout: []u8,
+            stderr: []u8,
+        },
+        error_msg: []const u8,
+    };
+
+    /// Parses "|", "e+o>|", "e>|", "o>|" from the raw args.
+    pub fn init(arena: Allocator, args: []const []const u8) Allocator.Error!Pipeline {
+        var commands: std.ArrayList(Command) = .empty;
+        errdefer commands.deinit(arena);
+        var curr_command: Command = .{ .args = &.{}, .redirect = .{} };
+
+        var start: usize = 0;
+        for (args, 0..) |arg, i| {
+            if (std.mem.eql(u8, arg, "|")) {
+                curr_command.redirect = .{};
+                curr_command.args = args[start..i];
+                try commands.append(arena, curr_command);
+                start = i + 1;
+            } else if (std.mem.eql(u8, arg, "e+o>|") or std.mem.eql(u8, arg, "o+e>|")) {
+                curr_command.redirect = .{ .stderr = true, .stdout = true };
+                curr_command.args = args[start..i];
+                try commands.append(arena, curr_command);
+                start = i + 1;
+            } else if (std.mem.eql(u8, arg, "e>|")) {
+                curr_command.redirect = .{ .stderr = true, .stdout = false };
+                curr_command.args = args[start..i];
+                try commands.append(arena, curr_command);
+                start = i + 1;
+            }
+        }
+
+        if (start < args.len) {
+            curr_command.redirect = .{};
+            curr_command.args = args[start..];
+            try commands.append(arena, curr_command);
+        }
+
+        return .{ .commands = commands.items };
+    }
+
+    /// Executes the current pipeline.
+    /// Returning the status and output of the last command of the pipeline.
+    pub fn run(self: Pipeline, io: Io, arena: Allocator) !PipelineResult {
+        const n_pipes = self.commands.len -| 1;
+        log.info("Executing pipeline: {f}", .{self});
+
+        var pipes: std.ArrayList(Pipe) = try .initCapacity(arena, n_pipes);
+        defer {
+            for (pipes.items) |*pipe| pipe.closeAll();
+            pipes.deinit(arena);
+        }
+
+        for (0..n_pipes) |_| {
+            const pipe: Pipe = try .open();
+            pipes.appendAssumeCapacity(pipe);
+        }
+
+        var children: std.ArrayList(Child) = try .initCapacity(arena, self.commands.len);
+        defer children.deinit(arena);
+
+        for (self.commands, 0..) |command, i| {
+            const is_unique = self.commands.len == 1;
+            const is_first = i == 0 and !is_unique;
+            const is_last = i == self.commands.len - 1 and !is_first;
+            const is_mid = !is_last;
+
+            const child = blk: {
+                if (is_unique) {
+                    const child = std.process.spawn(io, .{ .argv = command.args }) catch |err|
+                        return bail(arena, err, "Failed to run command");
+                    log.debug("Spawned unique one: {s} 'id={?}'", .{ command.args[0], child.id });
+                    break :blk child;
+                } else if (is_first) {
+                    std.debug.assert(i == 0);
+                    const pipe = pipes.items[i];
+
+                    const stdout: StdIo = if (command.redirect.stdout) .{ .file = pipe.write_end } else .inherit;
+                    const stderr: StdIo = if (command.redirect.stderr) .{ .file = pipe.write_end } else .inherit;
+
+                    const child = std.process.spawn(io, .{
+                        .argv = command.args,
+                        .stdout = stdout,
+                        .stderr = stderr,
+                    }) catch |err| return bail(arena, err, "Failed to run command");
+                    log.debug("Spawned first one: {s} 'id={?}'", .{ command.args[0], child.id });
+                    break :blk child;
+                } else if (is_mid) {
+                    const pipe_source = &pipes.items[i - 1];
+                    const pipe_sink = &pipes.items[i];
+
+                    const stdin: StdIo = .{ .file = pipe_source.read_end };
+                    const stdout: StdIo = if (command.redirect.stdout) .{ .file = pipe_sink.write_end } else .inherit;
+                    const stderr: StdIo = if (command.redirect.stderr) .{ .file = pipe_sink.write_end } else .inherit;
+
+                    const child = std.process.spawn(io, .{
+                        .argv = command.args,
+                        .stdin = stdin,
+                        .stdout = stdout,
+                        .stderr = stderr,
+                    }) catch |err| return bail(arena, err, "Failed to run command");
+                    log.debug("Spawned middle one: {s} 'id={?}'", .{ command.args[0], child.id });
+                    break :blk child;
+                } else if (is_last) {
+                    const pipe = &pipes.items[i - 1];
+                    const stdin: StdIo = .{ .file = pipe.read_end };
+
+                    const child = std.process.spawn(io, .{
+                        .argv = command.args,
+                        .stdin = stdin,
+                    }) catch |err| return bail(arena, err, "Failed to run command");
+                    log.debug("Spawned last one: {s} 'id={?}'", .{ command.args[0], child.id });
+                    break :blk child;
+                } else unreachable;
+            };
+
+            children.appendAssumeCapacity(child);
+        }
+
+        // We need to close all pipes from the parent process.
+        // So the only one using them are children.
+        for (pipes.items) |*pipe| {
+            pipe.closeAll();
+        }
+
+        var last_status: ?Child.Term = null;
+        var last_pid: ?Child.Id = null;
+
+        // collect child results
+        for (children.items, 0..) |*child, i| {
+            const pid = child.id.?;
+            const name = self.commands[i].args[0];
+            log.debug("Waiting child: {s} 'id={d}'", .{ name, pid });
+
+            const status = try child.wait(io);
+
+            if (i == children.items.len - 1) {
+                last_status = status;
+                last_pid = pid;
+            }
+        }
+
+        return .{
+            .status = .{
+                .pid = last_pid.?,
+                .term = last_status.?,
+                .stdout = &.{}, // TODO: gather stdout
+                .stderr = &.{}, // TODO: gather stderr
+            },
+        };
     }
 
     pub fn format(self: Pipeline, out: *Io.Writer) Io.Writer.Error!void {
@@ -165,110 +313,17 @@ const Pipeline = struct {
             }
         }
     }
+
+    fn bail(arena: Allocator, err: anyerror, msg: []const u8) PipelineResult {
+        return .{
+            .error_msg = std.fmt.allocPrint(arena, "{s} ({t})", .{ msg, err }) catch
+                @errorName(err),
+        };
+    }
 };
 
-pub fn pipeline(io: Io, arena: Allocator, commands: []const Command) !void {
-    const n_pipes = commands.len -| 1;
-    std.log.info("Executing pipeline: {f}", .{Pipeline.init(commands)});
-
-    var pipes: std.ArrayList(Pipe) = try .initCapacity(arena, n_pipes);
-    defer {
-        for (pipes.items) |*pipe| pipe.closeAll();
-        pipes.deinit(arena);
-    }
-
-    for (0..n_pipes) |_| {
-        const pipe: Pipe = try .open();
-        pipes.appendAssumeCapacity(pipe);
-    }
-
-    var children: std.ArrayList(Child) = try .initCapacity(arena, commands.len);
-    defer children.deinit(arena);
-
-    for (commands, 0..) |command, i| {
-        const is_unique = commands.len == 1;
-        const is_first = i == 0 and !is_unique;
-        const is_last = i == commands.len - 1 and !is_first;
-        const is_mid = !is_last;
-
-        const child = blk: {
-            if (is_unique) {
-                const child = try std.process.spawn(io, .{ .argv = command.args });
-                std.log.debug("Spawned unique one: {s} 'id={?}'", .{ command.args[0], child.id });
-                break :blk child;
-            } else if (is_first) {
-                std.debug.assert(i == 0);
-                const pipe = pipes.items[i];
-
-                const stdout: StdIo = if (command.redirect.stdout) .{ .file = pipe.write_end } else .inherit;
-                const stderr: StdIo = if (command.redirect.stderr) .{ .file = pipe.write_end } else .inherit;
-
-                const child = try std.process.spawn(io, .{
-                    .argv = command.args,
-                    .stdout = stdout,
-                    .stderr = stderr,
-                });
-                std.log.debug("Spawned first one: {s} 'id={?}'", .{ command.args[0], child.id });
-                break :blk child;
-            } else if (is_mid) {
-                const pipe_source = &pipes.items[i - 1];
-                const pipe_sink = &pipes.items[i];
-
-                const stdin: StdIo = .{ .file = pipe_source.read_end };
-                const stdout: StdIo = if (command.redirect.stdout) .{ .file = pipe_sink.write_end } else .inherit;
-                const stderr: StdIo = if (command.redirect.stderr) .{ .file = pipe_sink.write_end } else .inherit;
-
-                const child = try std.process.spawn(io, .{
-                    .argv = command.args,
-                    .stdin = stdin,
-                    .stdout = stdout,
-                    .stderr = stderr,
-                });
-                std.log.debug("Spawned middle one: {s} 'id={?}'", .{ command.args[0], child.id });
-                break :blk child;
-            } else if (is_last) {
-                const pipe = &pipes.items[i - 1];
-                const stdin: StdIo = .{ .file = pipe.read_end };
-
-                const child = try std.process.spawn(io, .{
-                    .argv = command.args,
-                    .stdin = stdin,
-                });
-                std.log.debug("Spawned last one: {s} 'id={?}'", .{ command.args[0], child.id });
-                break :blk child;
-            } else unreachable;
-        };
-
-        children.appendAssumeCapacity(child);
-    }
-
-    // We need to close all pipes from the parent process.
-    // So the only one using them are children.
-    for (pipes.items) |*pipe| {
-        pipe.closeAll();
-    }
-
-    // collect child results
-    for (children.items, 0..) |*child, i| {
-        const pid = child.id.?;
-        const name = commands[i].args[0];
-        std.log.debug("Waiting child: {s} 'id={d}'", .{ name, pid });
-
-        const res = try child.wait(io);
-
-        switch (res) {
-            .exited => |code| {
-                std.log.info("Command ({d}) exited with code {d}", .{ pid, code });
-            },
-            .signal => |sig| {
-                std.log.info("Command ({d}) killed by SIG{t}", .{ pid, sig });
-            },
-            .stopped => |sig| {
-                std.log.info("Command ({d}) stoped by SIG{t}", .{ pid, sig });
-            },
-            .unknown => |code| {
-                std.log.info("Command ({d}) terminated by unknown reasons {d}", .{ pid, code });
-            },
-        }
-    }
+/// Runs a pipeline in a more straitforward way. Does not collect any result.
+pub fn exec(io: Io, arena: Allocator, commands: []const Command) !void {
+    var p: Pipeline = .{ .commands = commands };
+    _ = try p.run(io, arena);
 }
