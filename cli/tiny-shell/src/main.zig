@@ -52,11 +52,35 @@ pub fn main(init: std.process.Init) !void {
         const line = std.mem.trim(u8, line_raw, &std.ascii.whitespace);
         if (line.len == 0) continue;
 
+        // Parse args and quotes
         var args: std.ArrayList([]const u8) = .empty;
-        var it = std.mem.tokenizeAny(u8, line, &std.ascii.whitespace);
-        while (it.next()) |word| {
-            const path = try std.fs.path.resolve(arena, &.{word});
-            try args.append(arena, path);
+        var start_arg: usize = 0;
+        var is_quoted = false;
+        for (line, 0..) |char, i| {
+            const maybe_word: ?[]const u8 = blk: {
+                if (char == '\"') {
+                    if (is_quoted) {
+                        is_quoted = false;
+                        defer start_arg = i + 1;
+                        break :blk line[start_arg..i];
+                    } else {
+                        is_quoted = true;
+                        start_arg = i + 1;
+                        break :blk null;
+                    }
+                } else if (!is_quoted and std.ascii.isWhitespace(char)) {
+                    defer start_arg = i + 1;
+                    break :blk line[start_arg..i];
+                } else if (i == line.len - 1) {
+                    break :blk line[start_arg..];
+                } else {
+                    break :blk null;
+                }
+            };
+            if (maybe_word) |word| {
+                const path = try std.fs.path.resolve(arena, &.{word});
+                try args.append(arena, path);
+            }
         }
 
         // basic builtin commands
